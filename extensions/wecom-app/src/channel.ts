@@ -405,18 +405,6 @@ export const wecomAppPlugin = {
       messageId: string;
       error?: Error;
     }> => {
-    sendText: async (params: {
-      cfg: PluginConfig;
-      accountId?: string;
-      to: string;
-      text: string;
-      options?: { markdown?: boolean };
-    }): Promise<{
-      channel: string;
-      ok: boolean;
-      messageId: string;
-      error?: Error;
-    }> => {
       // 1. 先解析 target
       const parsed = parseDirectTarget(params.to);
       if (!parsed) {
@@ -433,7 +421,7 @@ export const wecomAppPlugin = {
       const account = resolveWecomAppAccount({ cfg: params.cfg, accountId });
 
       // 3. 账号存在性检查（当 accountId 来自 target 时）
-      if (parsed.accountId && !params.cfg.channels?.['wecom-app']?.accounts?.[accountId]) {
+      if (parsed.accountId && accountId && !params.cfg.channels?.['wecom-app']?.accounts?.[accountId]) {
         console.error(`[wecom-app] Account "${accountId}" not found in configuration`);
         return {
           channel: 'wecom-app',
@@ -515,7 +503,7 @@ export const wecomAppPlugin = {
       });
 
       // 3. 账号存在性检查（当 accountId 来自 target 时）
-      if (parsed.accountId && !params.cfg.channels?.['wecom-app']?.accounts?.[accountId]) {
+      if (parsed.accountId && accountId && !params.cfg.channels?.['wecom-app']?.accounts?.[accountId]) {
         console.error(`[wecom-app] Account "${accountId}" not found in configuration`);
         return {
           channel: 'wecom-app',
@@ -646,6 +634,7 @@ export const wecomAppPlugin = {
           error: err instanceof Error ? err : new Error(String(err)),
         };
       }
+    },
   },
 
   gateway: {
