@@ -15,7 +15,7 @@ export interface MoltbotPluginApi {
 
 export { qqbotPlugin, DEFAULT_ACCOUNT_ID } from "./src/channel.js";
 export { setQQBotRuntime, getQQBotRuntime } from "./src/runtime.js";
-export type { QQBotConfig, ResolvedQQBotAccount, QQBotSendResult } from "./src/types.js";
+export type { QQBotConfig, QQBotAccountConfig, ResolvedQQBotAccount, QQBotSendResult } from "./src/types.js";
 
 const plugin = {
   id: "qqbot",
@@ -26,6 +26,8 @@ const plugin = {
     additionalProperties: false,
     properties: {
       enabled: { type: "boolean" },
+      name: { type: "string" },
+      defaultAccount: { type: "string" },
       appId: { type: "string" },
       clientSecret: { type: "string" },
       asr: {
@@ -46,7 +48,43 @@ const plugin = {
       groupAllowFrom: { type: "array", items: { type: "string" } },
       historyLimit: { type: "integer", minimum: 0 },
       textChunkLimit: { type: "integer", minimum: 1 },
-      replyFinalOnly: { type: "boolean" }
+      replyFinalOnly: { type: "boolean" },
+      maxFileSizeMB: { type: "number" },
+      mediaTimeoutMs: { type: "number" },
+      accounts: {
+        type: "object",
+        additionalProperties: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" },
+            enabled: { type: "boolean" },
+            appId: { type: "string" },
+            clientSecret: { type: "string" },
+            asr: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                enabled: { type: "boolean" },
+                appId: { type: "string" },
+                secretId: { type: "string" },
+                secretKey: { type: "string" }
+              }
+            },
+            markdownSupport: { type: "boolean" },
+            dmPolicy: { type: "string", enum: ["open", "pairing", "allowlist"] },
+            groupPolicy: { type: "string", enum: ["open", "allowlist", "disabled"] },
+            requireMention: { type: "boolean" },
+            allowFrom: { type: "array", items: { type: "string" } },
+            groupAllowFrom: { type: "array", items: { type: "string" } },
+            historyLimit: { type: "integer", minimum: 0 },
+            textChunkLimit: { type: "integer", minimum: 1 },
+            replyFinalOnly: { type: "boolean" },
+            maxFileSizeMB: { type: "number" },
+            mediaTimeoutMs: { type: "number" }
+          }
+        }
+      }
     },
   },
 

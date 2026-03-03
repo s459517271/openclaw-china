@@ -10,7 +10,7 @@ import {
   uploadGroupMedia,
   MediaFileType,
 } from "./client.js";
-import type { QQBotConfig } from "./types.js";
+import type { QQBotAccountConfig } from "./types.js";
 import {
   detectMediaType,
   FileSizeLimitError,
@@ -32,7 +32,7 @@ export type QQBotFileTarget = {
 };
 
 export interface SendFileQQBotParams {
-  cfg: QQBotConfig;
+  cfg: QQBotAccountConfig;
   target: QQBotFileTarget;
   mediaUrl: string;
   messageId?: string;

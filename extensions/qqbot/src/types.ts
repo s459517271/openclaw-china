@@ -1,4 +1,4 @@
-export type { QQBotConfig } from "./config.js";
+export type { QQBotConfig, QQBotAccountConfig, PluginConfig } from "./config.js";
 
 export interface ResolvedQQBotAccount {
   accountId: string;

@@ -2,16 +2,17 @@ import { httpGet, httpPost, type HttpRequestOptions } from "@openclaw-china/shar
 
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
+const MSG_SEQ_BASE = 1000000;
 
 type TokenCache = {
   token: string;
   expiresAt: number;
 };
 
-let tokenCache: TokenCache | null = null;
-let tokenPromise: Promise<string> | null = null;
+// 按 appId 区分的 token 缓存（支持多账户）
+const tokenCacheMap = new Map<string, TokenCache>();
+const tokenPromiseMap = new Map<string, Promise<string>>();
 
-const MSG_SEQ_BASE = Math.floor(Date.now() / 1000) % 100000000;
 const msgSeqMap = new Map<string, number>();
 
 function nextMsgSeq(messageId?: string): number {
@@ -28,8 +29,14 @@ function nextMsgSeq(messageId?: string): number {
   return MSG_SEQ_BASE + next;
 }
 
-export function clearTokenCache(): void {
-  tokenCache = null;
+export function clearTokenCache(appId?: string): void {
+  if (appId) {
+    tokenCacheMap.delete(appId);
+    tokenPromiseMap.delete(appId);
+  } else {
+    tokenCacheMap.clear();
+    tokenPromiseMap.clear();
+  }
 }
 
 export async function getAccessToken(
@@ -37,15 +44,17 @@ export async function getAccessToken(
   clientSecret: string,
   options?: HttpRequestOptions
 ): Promise<string> {
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 5 * 60 * 1000) {
-    return tokenCache.token;
+  const cached = tokenCacheMap.get(appId);
+  if (cached && Date.now() < cached.expiresAt - 5 * 60 * 1000) {
+    return cached.token;
   }
 
-  if (tokenPromise) {
-    return tokenPromise;
+  const existingPromise = tokenPromiseMap.get(appId);
+  if (existingPromise) {
+    return existingPromise;
   }
 
-  tokenPromise = (async () => {
+  const promise = (async () => {
     try {
       const data = await httpPost<{ access_token?: string; expires_in?: number }>(
         TOKEN_URL,
@@ -57,18 +66,20 @@ export async function getAccessToken(
         throw new Error("access_token missing from QQ response");
       }
 
-      tokenCache = {
+      tokenCacheMap.set(appId, {
         token: data.access_token,
         expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
-      };
-      return tokenCache.token;
+      });
+      return data.access_token;
     } finally {
-      tokenPromise = null;
+      tokenPromiseMap.delete(appId);
     }
   })();
 
-  return tokenPromise;
+  tokenPromiseMap.set(appId, promise);
+  return promise;
 }
+
 
 async function apiGet<T>(
   accessToken: string,

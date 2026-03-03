@@ -17,9 +17,11 @@ import {
   transcribeTencentFlash,
 } from "@openclaw-china/shared";
 import {
-  QQBotConfigSchema,
   resolveQQBotASRCredentials,
-  type QQBotConfig,
+  mergeQQBotAccountConfig,
+  DEFAULT_ACCOUNT_ID,
+  type QQBotAccountConfig,
+  type PluginConfig,
 } from "./config.js";
 import { qqbotOutbound } from "./outbound.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -33,11 +35,7 @@ import * as fs from "node:fs";
 type DispatchParams = {
   eventType: string;
   eventData: unknown;
-  cfg?: {
-    channels?: {
-      qqbot?: QQBotConfig;
-    };
-  };
+  cfg?: PluginConfig;
   accountId: string;
   logger?: Logger;
 };
@@ -179,7 +177,7 @@ function buildVoiceASRFallbackReply(errorMessage?: string): string {
 
 async function resolveInboundAttachmentsForAgent(params: {
   attachments?: QQInboundAttachment[];
-  qqCfg: QQBotConfig;
+  qqCfg: QQBotAccountConfig;
   logger: Logger;
 }): Promise<ResolvedInboundAttachmentResult> {
   const { attachments, qqCfg, logger } = params;
@@ -624,7 +622,7 @@ export function evaluateReplyFinalOnlyDelivery(params: {
 }
 
 export async function sendQQBotMediaWithFallback(params: {
-  qqCfg: QQBotConfig;
+  qqCfg: QQBotAccountConfig;
   to: string;
   mediaQueue: string[];
   replyToId?: string;
@@ -702,7 +700,7 @@ function buildInboundContext(params: {
 async function dispatchToAgent(params: {
   inbound: QQInboundMessage;
   cfg: unknown;
-  qqCfg: QQBotConfig;
+  qqCfg: QQBotAccountConfig;
   accountId: string;
   logger: Logger;
 }): Promise<void> {
@@ -1029,7 +1027,7 @@ async function dispatchToAgent(params: {
   dispatcherResult.markDispatchIdle?.();
 }
 
-function shouldHandleMessage(event: QQInboundMessage, qqCfg: QQBotConfig, logger: Logger): boolean {
+function shouldHandleMessage(event: QQInboundMessage, qqCfg: QQBotAccountConfig, logger: Logger): boolean {
   if (event.type === "direct") {
     const dmPolicy = qqCfg.dmPolicy ?? "open";
     const allowed = checkDmPolicy({
@@ -1070,14 +1068,13 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     return;
   }
 
-  const rawCfg = params.cfg?.channels?.qqbot;
-  const parsedCfg = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-  const qqCfg = parsedCfg?.success ? parsedCfg.data : rawCfg;
+  const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
+  const qqCfg = params.cfg ? mergeQQBotAccountConfig(params.cfg, accountId) : undefined;
   if (!qqCfg) {
     logger.warn("qqbot config missing, ignoring inbound message");
     return;
   }
-  if (!qqCfg.enabled) {
+  if (qqCfg.enabled === false) {
     logger.info("qqbot disabled, ignoring inbound message");
     return;
   }
@@ -1089,7 +1086,7 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
       attachments: inbound.attachments,
     })
   );
-  logger.info(`[inbound-user] senderId=${inbound.senderId} content=${inboundLogContent}`);
+  logger.info(`[inbound-user] accountId=${accountId} senderId=${inbound.senderId} content=${inboundLogContent}`);
 
   if (!shouldHandleMessage(inbound, qqCfg, logger)) {
     return;
@@ -1107,7 +1104,7 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     inbound: { ...inbound, content },
     cfg: params.cfg,
     qqCfg,
-    accountId: params.accountId,
+    accountId,
     logger,
   });
 }

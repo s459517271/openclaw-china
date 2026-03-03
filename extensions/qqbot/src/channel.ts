@@ -1,14 +1,23 @@
+// Re-export for index.ts
+export { DEFAULT_ACCOUNT_ID } from "./config.js";
+
 /**
  * QQ Bot ChannelPlugin 实现
  */
 
 import type { ResolvedQQBotAccount, QQBotConfig } from "./types.js";
-import { QQBotConfigSchema, isConfigured, resolveQQBotCredentials } from "./config.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  listQQBotAccountIds,
+  resolveDefaultQQBotAccountId,
+  mergeQQBotAccountConfig,
+  resolveQQBotCredentials,
+  type PluginConfig,
+} from "./config.js";
 import { qqbotOutbound } from "./outbound.js";
-import { monitorQQBotProvider, stopQQBotMonitor } from "./monitor.js";
+import { monitorQQBotProvider, stopQQBotMonitorForAccount } from "./monitor.js";
 import { setQQBotRuntime } from "./runtime.js";
 
-export const DEFAULT_ACCOUNT_ID = "default";
 
 const meta = {
   id: "qqbot",
@@ -21,29 +30,24 @@ const meta = {
   order: 72,
 } as const;
 
-interface PluginConfig {
-  channels?: {
-    qqbot?: QQBotConfig;
-  };
-}
 
 function resolveQQBotAccount(params: {
   cfg: PluginConfig;
   accountId?: string;
 }): ResolvedQQBotAccount {
   const { cfg, accountId = DEFAULT_ACCOUNT_ID } = params;
-  const qqCfg = cfg.channels?.qqbot;
-  const parsed = qqCfg ? QQBotConfigSchema.safeParse(qqCfg) : null;
-  const config = parsed?.success ? parsed.data : undefined;
-  const credentials = resolveQQBotCredentials(config);
+  const merged = mergeQQBotAccountConfig(cfg, accountId);
+  const baseEnabled = cfg.channels?.qqbot?.enabled !== false;
+  const enabled = baseEnabled && merged.enabled !== false;
+  const credentials = resolveQQBotCredentials(merged);
   const configured = Boolean(credentials);
 
   return {
     accountId,
-    enabled: config?.enabled ?? true,
+    enabled,
     configured,
     appId: credentials?.appId,
-    markdownSupport: config?.markdownSupport ?? true,
+    markdownSupport: merged.markdownSupport ?? true,
   };
 }
 
@@ -125,6 +129,8 @@ export const qqbotPlugin = {
       additionalProperties: false,
       properties: {
         enabled: { type: "boolean" },
+        name: { type: "string" },
+        defaultAccount: { type: "string" },
         appId: { type: "string" },
         clientSecret: { type: "string" },
         asr: {
@@ -146,6 +152,42 @@ export const qqbotPlugin = {
         historyLimit: { type: "integer", minimum: 0 },
         textChunkLimit: { type: "integer", minimum: 1 },
         replyFinalOnly: { type: "boolean" },
+        maxFileSizeMB: { type: "number" },
+        mediaTimeoutMs: { type: "number" },
+        accounts: {
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              name: { type: "string" },
+              enabled: { type: "boolean" },
+              appId: { type: "string" },
+              clientSecret: { type: "string" },
+              asr: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  enabled: { type: "boolean" },
+                  appId: { type: "string" },
+                  secretId: { type: "string" },
+                  secretKey: { type: "string" },
+                },
+              },
+              markdownSupport: { type: "boolean" },
+              dmPolicy: { type: "string", enum: ["open", "pairing", "allowlist"] },
+              groupPolicy: { type: "string", enum: ["open", "allowlist", "disabled"] },
+              requireMention: { type: "boolean" },
+              allowFrom: { type: "array", items: { type: "string" } },
+              groupAllowFrom: { type: "array", items: { type: "string" } },
+              historyLimit: { type: "integer", minimum: 0 },
+              textChunkLimit: { type: "integer", minimum: 1 },
+              replyFinalOnly: { type: "boolean" },
+              maxFileSizeMB: { type: "number" },
+              mediaTimeoutMs: { type: "number" },
+            },
+          },
+        },
       },
     },
   },
@@ -153,43 +195,85 @@ export const qqbotPlugin = {
   reload: { configPrefixes: ["channels.qqbot"] },
 
   config: {
-    listAccountIds: (_cfg: PluginConfig): string[] => [DEFAULT_ACCOUNT_ID],
+    listAccountIds: (cfg: PluginConfig): string[] => listQQBotAccountIds(cfg),
     resolveAccount: (cfg: PluginConfig, accountId?: string): ResolvedQQBotAccount =>
       resolveQQBotAccount({ cfg, accountId }),
     defaultAccountId: (): string => DEFAULT_ACCOUNT_ID,
-    setAccountEnabled: (params: { cfg: PluginConfig; enabled: boolean }): PluginConfig => {
+    setAccountEnabled: (params: { cfg: PluginConfig; accountId?: string; enabled: boolean }): PluginConfig => {
+      const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
       const existing = params.cfg.channels?.qqbot ?? {};
+
+      if (accountId === DEFAULT_ACCOUNT_ID) {
+        return {
+          ...params.cfg,
+          channels: {
+            ...params.cfg.channels,
+            qqbot: { ...existing, enabled: params.enabled } as QQBotConfig,
+          },
+        };
+      }
+
+      const accounts = (existing as QQBotConfig).accounts ?? {};
+      const account = accounts[accountId] ?? {};
       return {
         ...params.cfg,
         channels: {
           ...params.cfg.channels,
           qqbot: {
             ...existing,
-            enabled: params.enabled,
+            accounts: {
+              ...accounts,
+              [accountId]: { ...account, enabled: params.enabled },
+            },
           } as QQBotConfig,
         },
       };
     },
-    deleteAccount: (params: { cfg: PluginConfig }): PluginConfig => {
-      const next = { ...params.cfg };
-      const nextChannels = { ...params.cfg.channels };
-      delete (nextChannels as Record<string, unknown>).qqbot;
-      if (Object.keys(nextChannels).length > 0) {
-        next.channels = nextChannels;
-      } else {
-        delete next.channels;
+    deleteAccount: (params: { cfg: PluginConfig; accountId?: string }): PluginConfig => {
+      const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
+
+      if (accountId === DEFAULT_ACCOUNT_ID) {
+        const next = { ...params.cfg };
+        const nextChannels = { ...params.cfg.channels };
+        delete (nextChannels as Record<string, unknown>).qqbot;
+        if (Object.keys(nextChannels).length > 0) {
+          next.channels = nextChannels;
+        } else {
+          delete next.channels;
+        }
+        return next;
       }
-      return next;
+
+      const existing = params.cfg.channels?.qqbot;
+      if (!existing?.accounts?.[accountId]) return params.cfg;
+
+      const { [accountId]: _removed, ...remainingAccounts } = existing.accounts;
+      return {
+        ...params.cfg,
+        channels: {
+          ...params.cfg.channels,
+          qqbot: {
+            ...existing,
+            accounts: Object.keys(remainingAccounts).length > 0 ? remainingAccounts : undefined,
+          } as QQBotConfig,
+        },
+      };
     },
-    isConfigured: (_account: ResolvedQQBotAccount, cfg: PluginConfig): boolean =>
-      isConfigured(cfg.channels?.qqbot),
+    isConfigured: (_account: ResolvedQQBotAccount, cfg: PluginConfig, accountId?: string): boolean => {
+      const id = accountId ?? _account.accountId;
+      const merged = mergeQQBotAccountConfig(cfg, id);
+      return Boolean(merged.appId && merged.clientSecret);
+    },
     describeAccount: (account: ResolvedQQBotAccount) => ({
       accountId: account.accountId,
       enabled: account.enabled,
       configured: account.configured,
     }),
-    resolveAllowFrom: (params: { cfg: PluginConfig }): string[] =>
-      params.cfg.channels?.qqbot?.allowFrom ?? [],
+    resolveAllowFrom: (params: { cfg: PluginConfig; accountId?: string }): string[] => {
+      const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
+      const merged = mergeQQBotAccountConfig(params.cfg, accountId);
+      return merged.allowFrom ?? [];
+    },
     formatAllowFrom: (params: { allowFrom: (string | number)[] }): string[] =>
       params.allowFrom
         .map((entry) => String(entry).trim())
@@ -209,16 +293,33 @@ export const qqbotPlugin = {
   },
 
   setup: {
-    resolveAccountId: (): string => DEFAULT_ACCOUNT_ID,
-    applyAccountConfig: (params: { cfg: PluginConfig }): PluginConfig => {
+    resolveAccountId: (params: { cfg: PluginConfig; accountId?: string }): string =>
+      params.accountId ?? resolveDefaultQQBotAccountId(params.cfg),
+    applyAccountConfig: (params: { cfg: PluginConfig; accountId?: string; config?: Record<string, unknown> }): PluginConfig => {
+      const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
       const existing = params.cfg.channels?.qqbot ?? {};
+
+      if (accountId === DEFAULT_ACCOUNT_ID) {
+        return {
+          ...params.cfg,
+          channels: {
+            ...params.cfg.channels,
+            qqbot: { ...existing, ...params.config, enabled: true } as QQBotConfig,
+          },
+        };
+      }
+
+      const accounts = (existing as QQBotConfig).accounts ?? {};
       return {
         ...params.cfg,
         channels: {
           ...params.cfg.channels,
           qqbot: {
             ...existing,
-            enabled: true,
+            accounts: {
+              ...accounts,
+              [accountId]: { ...accounts[accountId], ...params.config, enabled: true },
+            },
           } as QQBotConfig,
         },
       };
@@ -265,9 +366,10 @@ export const qqbotPlugin = {
         accountId: ctx.accountId,
       });
     },
-    stopAccount: async (_ctx: { accountId: string }): Promise<void> => {
-      stopQQBotMonitor();
+    stopAccount: async (ctx: { accountId: string }): Promise<void> => {
+      stopQQBotMonitorForAccount(ctx.accountId);
     },
+
     getStatus: () => ({ connected: true }),
   },
 };

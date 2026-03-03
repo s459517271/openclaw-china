@@ -136,6 +136,52 @@ openclaw config set gateway.http.endpoints.chatCompletions.enabled true
 | textChunkLimit | number | 1500 | 文本分块长度 |
 | replyFinalOnly | boolean | false | 是否仅发送最终回复文本（不会阻断媒体工具结果，如 TTS 语音） |
 
+### 3. 多账户配置
+
+如需配置多个 QQ 机器人，可以使用 `accounts` 对象（键为账户 ID）：
+
+```json
+{
+  "channels": {
+    "qqbot": {
+      "enabled": true,
+      "defaultAccount": "bot1",
+      "accounts": {
+        "bot1": {
+          "name": "主机器人",
+          "appId": "1234567890",
+          "clientSecret": "secret-1",
+          "markdownSupport": true,
+          "dmPolicy": "open",
+          "groupPolicy": "open"
+        },
+        "bot2": {
+          "name": "备用机器人",
+          "appId": "0987654321",
+          "clientSecret": "secret-2",
+          "markdownSupport": false
+        }
+      }
+    }
+  }
+}
+```
+
+> 提示：
+> - 顶层配置（如 `enabled`、`dmPolicy`）作为默认值，账户内配置会覆盖顶层配置。
+> - `defaultAccount` 指定默认使用的账户 ID，不配置时默认为 `"default"`。
+> - 账户内未指定的字段会继承顶层配置。
+
+多 agent 分流（bindings）示例：
+```json
+{
+  "bindings": [
+    { "agentId": "main", "match": { "channel": "qqbot", "accountId": "bot1" } },
+    { "agentId": "work", "match": { "channel": "qqbot", "accountId": "bot2" } }
+  ]
+}
+```
+> 说明：如果只用默认 `main`，可以不配置 `bindings`；多账号分流到不同 agent 时必须配置。
 ---
 
 ## 四、能力与限制

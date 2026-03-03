@@ -2,7 +2,7 @@
  * QQ Bot 出站适配器
  */
 
-import { QQBotConfigSchema } from "./config.js";
+import { mergeQQBotAccountConfig, DEFAULT_ACCOUNT_ID, type PluginConfig } from "./config.js";
 import {
   getAccessToken,
   sendC2CInputNotify,
@@ -11,13 +11,8 @@ import {
   sendChannelMessage,
 } from "./client.js";
 import { sendFileQQBot } from "./send.js";
-import type { QQBotConfig, QQBotSendResult } from "./types.js";
+import type { QQBotSendResult } from "./types.js";
 
-export interface OutboundConfig {
-  channels?: {
-    qqbot?: QQBotConfig;
-  };
-}
 
 type TargetKind = "c2c" | "group" | "channel";
 
@@ -51,18 +46,14 @@ export const qqbotOutbound = {
   chunkerMode: "markdown" as const,
 
   sendText: async (params: {
-    cfg: OutboundConfig;
+    cfg: PluginConfig;
     to: string;
     text: string;
     replyToId?: string;
+    accountId?: string;
   }): Promise<QQBotSendResult> => {
-    const { cfg, to, text, replyToId } = params;
-    const rawCfg = cfg.channels?.qqbot;
-    const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-    const qqCfg = parsed?.success ? parsed.data : rawCfg;
-    if (!qqCfg) {
-      return { channel: "qqbot", error: "QQBot channel not configured" };
-    }
+    const { cfg, to, text, replyToId, accountId } = params;
+    const qqCfg = mergeQQBotAccountConfig(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
     if (!qqCfg.appId || !qqCfg.clientSecret) {
       return { channel: "qqbot", error: "QQBot not configured (missing appId/clientSecret)" };
     }
@@ -107,27 +98,23 @@ export const qqbotOutbound = {
   },
 
   sendMedia: async (params: {
-    cfg: OutboundConfig;
+    cfg: PluginConfig;
     to: string;
     text?: string;
     mediaUrl?: string;
     replyToId?: string;
+    accountId?: string;
   }): Promise<QQBotSendResult> => {
-    const { cfg, to, mediaUrl, text, replyToId } = params;
+    const { cfg, to, mediaUrl, text, replyToId, accountId } = params;
     if (!mediaUrl) {
       const fallbackText = text?.trim() ?? "";
       if (!fallbackText) {
         return { channel: "qqbot", error: "mediaUrl is required for sendMedia" };
       }
-      return qqbotOutbound.sendText({ cfg, to, text: fallbackText, replyToId });
+      return qqbotOutbound.sendText({ cfg, to, text: fallbackText, replyToId, accountId });
     }
 
-    const rawCfg = cfg.channels?.qqbot;
-    const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-    const qqCfg = parsed?.success ? parsed.data : rawCfg;
-    if (!qqCfg) {
-      return { channel: "qqbot", error: "QQBot channel not configured" };
-    }
+    const qqCfg = mergeQQBotAccountConfig(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
     if (!qqCfg.appId || !qqCfg.clientSecret) {
       return { channel: "qqbot", error: "QQBot not configured (missing appId/clientSecret)" };
     }
@@ -153,18 +140,14 @@ export const qqbotOutbound = {
   },
 
   sendTyping: async (params: {
-    cfg: OutboundConfig;
+    cfg: PluginConfig;
     to: string;
     replyToId?: string;
     inputSecond?: number;
+    accountId?: string;
   }): Promise<QQBotSendResult> => {
-    const { cfg, to, replyToId, inputSecond } = params;
-    const rawCfg = cfg.channels?.qqbot;
-    const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-    const qqCfg = parsed?.success ? parsed.data : rawCfg;
-    if (!qqCfg) {
-      return { channel: "qqbot", error: "QQBot channel not configured" };
-    }
+    const { cfg, to, replyToId, inputSecond, accountId } = params;
+    const qqCfg = mergeQQBotAccountConfig(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
     if (!qqCfg.appId || !qqCfg.clientSecret) {
       return { channel: "qqbot", error: "QQBot not configured (missing appId/clientSecret)" };
     }
