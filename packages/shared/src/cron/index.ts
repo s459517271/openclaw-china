@@ -4,6 +4,12 @@ When creating or updating a cron task, always store a fixed delivery target in t
 - Must use sessionTarget="isolated" for reminder jobs.
 - payload.kind="agentTurn"
 - payload.message must be plain user-visible reminder text only.
+- You must encode runtime guardrails directly into payload.message so the cron run can follow them without extra context.
+- Runtime guardrails to encode in payload.message:
+  - return plain text only
+  - never call any tool
+  - never call the message tool
+  - never send manually; delivery is handled by cron delivery settings
 - Do not include tool directives, "NO_REPLY", or heartbeat markers in payload.message.
 - Job name is never a message target.
 - During cron run, must return plain text only and never call the message tool.

@@ -91,6 +91,15 @@
 <details>
 <summary><strong>点击展开更新日志</strong></summary>
 
+### 2026-03-05
+
+- `qqbot` 在 `msg_id` 失效场景下回退使用 `event_id`，提升定时与异步回发稳定性。
+- 优化定时任务稳定性：提醒类任务统一采用 sessionTarget="isolated" + 固定 delivery.channel/to/accountId，避免投递串会话。
+- 强化 Cron 创建提示词：明确要求将执行期约束写入 payload.message（仅纯文本、禁止调用工具、禁止手动发送）。
+
+
+
+
 ### 2026-03-03
 
 - Merge PR #101：`qqbot` 新增多账户能力，覆盖配置、连接管理与令牌缓存。
