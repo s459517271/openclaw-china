@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "@openclaw-china/shared";
 
 const mocks = vi.hoisted(() => ({
   httpPost: vi.fn(),
@@ -171,6 +172,45 @@ describe("getAccessToken", () => {
     );
   });
 
+  it("retries passive C2C sends when QQ rejects a duplicate msg_seq", async () => {
+    mocks.httpPost
+      .mockRejectedValueOnce(
+        new HttpError(
+          "HTTP 400: Bad Request",
+          400,
+          JSON.stringify({
+            message: "消息被去重，请检查请求msgseq",
+            code: 40054005,
+            err_code: 40054005,
+          })
+        )
+      )
+      .mockResolvedValueOnce({
+        id: "msg-c2c-dup-1",
+        timestamp: 3,
+      });
+
+    const result = await sendC2CMessage({
+      accessToken: "token-1",
+      openid: "UserABC123XYZ",
+      content: "hello after duplicate",
+      messageId: "msg-dup-c2c-1",
+      markdown: false,
+    });
+
+    expect(result).toEqual({ id: "msg-c2c-dup-1", timestamp: 3 });
+    expect(mocks.httpPost).toHaveBeenCalledTimes(2);
+
+    const firstBody = mocks.httpPost.mock.calls[0]?.[1] as { msg_seq?: number; msg_id?: string };
+    const secondBody = mocks.httpPost.mock.calls[1]?.[1] as { msg_seq?: number; msg_id?: string };
+
+    expect(firstBody.msg_id).toBe("msg-dup-c2c-1");
+    expect(secondBody.msg_id).toBe("msg-dup-c2c-1");
+    expect(firstBody.msg_seq).toEqual(expect.any(Number));
+    expect(secondBody.msg_seq).toEqual(expect.any(Number));
+    expect(secondBody.msg_seq).toBeGreaterThan(firstBody.msg_seq ?? 0);
+  });
+
   it("omits passive reply metadata for proactive C2C markdown messages", async () => {
     mocks.httpPost.mockResolvedValue({
       id: "msg-c2c-2",
@@ -246,5 +286,41 @@ describe("getAccessToken", () => {
       }),
       expect.any(Object)
     );
+  });
+
+  it("retries passive group sends when QQ rejects a duplicate msg_seq", async () => {
+    mocks.httpPost
+      .mockRejectedValueOnce(
+        new HttpError(
+          "HTTP 400: Bad Request",
+          400,
+          JSON.stringify({
+            message: "消息被去重，请检查请求msgseq",
+            code: 40054005,
+          })
+        )
+      )
+      .mockResolvedValueOnce({
+        id: "msg-group-dup-1",
+        timestamp: 4,
+      });
+
+    const result = await sendGroupMessage({
+      accessToken: "token-2",
+      groupOpenid: "GroupABC123XYZ",
+      content: "hello group duplicate",
+      eventId: "evt-dup-group-1",
+      markdown: false,
+    });
+
+    expect(result).toEqual({ id: "msg-group-dup-1", timestamp: 4 });
+    expect(mocks.httpPost).toHaveBeenCalledTimes(2);
+
+    const firstBody = mocks.httpPost.mock.calls[0]?.[1] as { msg_seq?: number; event_id?: string };
+    const secondBody = mocks.httpPost.mock.calls[1]?.[1] as { msg_seq?: number; event_id?: string };
+
+    expect(firstBody.event_id).toBe("evt-dup-group-1");
+    expect(secondBody.event_id).toBe("evt-dup-group-1");
+    expect(secondBody.msg_seq).toBeGreaterThan(firstBody.msg_seq ?? 0);
   });
 });

@@ -1,8 +1,9 @@
-import { httpGet, httpPost, type HttpRequestOptions } from "@openclaw-china/shared";
+import { HttpError, httpGet, httpPost, type HttpRequestOptions } from "@openclaw-china/shared";
 
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 const MSG_SEQ_BASE = 1000000;
+const MAX_DUPLICATE_MSG_SEQ_RETRIES = 5;
 
 type TokenCache = {
   token: string;
@@ -14,6 +15,7 @@ const tokenCacheMap = new Map<string, TokenCache>();
 const tokenPromiseMap = new Map<string, Promise<string>>();
 
 const msgSeqMap = new Map<string, number>();
+let fallbackMsgSeq = 0;
 
 function toTrimmedString(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
@@ -37,7 +39,10 @@ function sanitizeUploadFileName(fileName: string): string {
 }
 
 function nextMsgSeq(sequenceKey?: string): number {
-  if (!sequenceKey) return MSG_SEQ_BASE + 1;
+  if (!sequenceKey) {
+    fallbackMsgSeq += 1;
+    return MSG_SEQ_BASE + fallbackMsgSeq;
+  }
   const current = msgSeqMap.get(sequenceKey) ?? 0;
   const next = current + 1;
   msgSeqMap.set(sequenceKey, next);
@@ -48,6 +53,63 @@ function nextMsgSeq(sequenceKey?: string): number {
     }
   }
   return MSG_SEQ_BASE + next;
+}
+
+function resolveMsgSeqKey(messageId?: string, eventId?: string): string | undefined {
+  if (messageId) return `msg:${messageId}`;
+  if (eventId) return `event:${eventId}`;
+  return undefined;
+}
+
+function isDuplicateMsgSeqError(err: unknown): boolean {
+  if (!(err instanceof HttpError) || err.status !== 400) {
+    return false;
+  }
+
+  const body = err.body?.trim();
+  if (!body) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(body) as {
+      code?: unknown;
+      err_code?: unknown;
+      message?: unknown;
+    };
+    if (parsed.code === 40054005 || parsed.err_code === 40054005) {
+      return true;
+    }
+    const message = typeof parsed.message === "string" ? parsed.message.toLowerCase() : "";
+    return message.includes("msgseq") && (message.includes("去重") || message.includes("duplicate"));
+  } catch {
+    const lowered = body.toLowerCase();
+    return lowered.includes("msgseq") && (lowered.includes("去重") || lowered.includes("duplicate"));
+  }
+}
+
+async function postPassiveMessage<T>(params: {
+  accessToken: string;
+  path: string;
+  sequenceKey?: string;
+  options?: HttpRequestOptions;
+  buildBody: (msgSeq: number) => Record<string, unknown>;
+}): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= MAX_DUPLICATE_MSG_SEQ_RETRIES; attempt += 1) {
+    const msgSeq = nextMsgSeq(params.sequenceKey);
+    try {
+      return await apiPost(params.accessToken, params.path, params.buildBody(msgSeq), params.options);
+    } catch (err) {
+      lastError = err;
+      if (!isDuplicateMsgSeqError(err) || attempt === MAX_DUPLICATE_MSG_SEQ_RETRIES) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 export function clearTokenCache(appId?: string | number): void {
@@ -147,13 +209,13 @@ function buildMessageBody(params: {
   messageId?: string;
   eventId?: string;
   markdown?: boolean;
+  msgSeq: number;
 }): Record<string, unknown> {
-  const msgSeq = nextMsgSeq(params.messageId ?? params.eventId);
   const body = buildTextMessageBody({
     content: params.content,
     markdown: params.markdown,
   });
-  body.msg_seq = msgSeq;
+  body.msg_seq = params.msgSeq;
 
   if (params.messageId) {
     body.msg_id = params.messageId;
@@ -196,14 +258,19 @@ export async function sendC2CMessage(params: {
   eventId?: string;
   markdown?: boolean;
 }): Promise<{ id: string; timestamp: number | string }> {
-  const body = buildMessageBody({
-    content: params.content,
-    messageId: params.messageId,
-    eventId: params.eventId,
-    markdown: params.markdown,
-  });
-  return apiPost(params.accessToken, `/v2/users/${params.openid}/messages`, body, {
-    timeout: 15000,
+  return postPassiveMessage({
+    accessToken: params.accessToken,
+    path: `/v2/users/${params.openid}/messages`,
+    sequenceKey: resolveMsgSeqKey(params.messageId, params.eventId),
+    options: { timeout: 15000 },
+    buildBody: (msgSeq) =>
+      buildMessageBody({
+        content: params.content,
+        messageId: params.messageId,
+        eventId: params.eventId,
+        markdown: params.markdown,
+        msgSeq,
+      }),
   });
 }
 
@@ -215,14 +282,19 @@ export async function sendGroupMessage(params: {
   eventId?: string;
   markdown?: boolean;
 }): Promise<{ id: string; timestamp: number | string }> {
-  const body = buildMessageBody({
-    content: params.content,
-    messageId: params.messageId,
-    eventId: params.eventId,
-    markdown: params.markdown,
-  });
-  return apiPost(params.accessToken, `/v2/groups/${params.groupOpenid}/messages`, body, {
-    timeout: 15000,
+  return postPassiveMessage({
+    accessToken: params.accessToken,
+    path: `/v2/groups/${params.groupOpenid}/messages`,
+    sequenceKey: resolveMsgSeqKey(params.messageId, params.eventId),
+    options: { timeout: 15000 },
+    buildBody: (msgSeq) =>
+      buildMessageBody({
+        content: params.content,
+        messageId: params.messageId,
+        eventId: params.eventId,
+        markdown: params.markdown,
+        msgSeq,
+      }),
   });
 }
 
@@ -278,11 +350,12 @@ export async function sendC2CInputNotify(params: {
   eventId?: string;
   inputSecond?: number;
 }): Promise<void> {
-  const msgSeq = nextMsgSeq(params.messageId ?? params.eventId);
-  await apiPost(
-    params.accessToken,
-    `/v2/users/${params.openid}/messages`,
-    {
+  await postPassiveMessage<void>({
+    accessToken: params.accessToken,
+    path: `/v2/users/${params.openid}/messages`,
+    sequenceKey: resolveMsgSeqKey(params.messageId, params.eventId),
+    options: { timeout: 15000 },
+    buildBody: (msgSeq) => ({
       msg_type: 6,
       input_notify: {
         input_type: 1,
@@ -294,9 +367,8 @@ export async function sendC2CInputNotify(params: {
         : params.eventId
           ? { event_id: params.eventId }
           : {}),
-    },
-    { timeout: 15000 }
-  );
+    }),
+  });
 }
 
 export enum MediaFileType {
@@ -379,11 +451,12 @@ export async function sendC2CMediaMessage(params: {
   eventId?: string;
   content?: string;
 }): Promise<{ id: string; timestamp: number | string }> {
-  const msgSeq = nextMsgSeq(params.messageId ?? params.eventId);
-  return apiPost(
-    params.accessToken,
-    `/v2/users/${params.openid}/messages`,
-    {
+  return postPassiveMessage({
+    accessToken: params.accessToken,
+    path: `/v2/users/${params.openid}/messages`,
+    sequenceKey: resolveMsgSeqKey(params.messageId, params.eventId),
+    options: { timeout: 15000 },
+    buildBody: (msgSeq) => ({
       msg_type: 7,
       media: { file_info: params.fileInfo },
       msg_seq: msgSeq,
@@ -393,9 +466,8 @@ export async function sendC2CMediaMessage(params: {
         : params.eventId
           ? { event_id: params.eventId }
           : {}),
-    },
-    { timeout: 15000 }
-  );
+    }),
+  });
 }
 
 export async function sendGroupMediaMessage(params: {
@@ -406,11 +478,12 @@ export async function sendGroupMediaMessage(params: {
   eventId?: string;
   content?: string;
 }): Promise<{ id: string; timestamp: number | string }> {
-  const msgSeq = nextMsgSeq(params.messageId ?? params.eventId);
-  return apiPost(
-    params.accessToken,
-    `/v2/groups/${params.groupOpenid}/messages`,
-    {
+  return postPassiveMessage({
+    accessToken: params.accessToken,
+    path: `/v2/groups/${params.groupOpenid}/messages`,
+    sequenceKey: resolveMsgSeqKey(params.messageId, params.eventId),
+    options: { timeout: 15000 },
+    buildBody: (msgSeq) => ({
       msg_type: 7,
       media: { file_info: params.fileInfo },
       msg_seq: msgSeq,
@@ -420,7 +493,6 @@ export async function sendGroupMediaMessage(params: {
         : params.eventId
           ? { event_id: params.eventId }
           : {}),
-    },
-    { timeout: 15000 }
-  );
+    }),
+  });
 }

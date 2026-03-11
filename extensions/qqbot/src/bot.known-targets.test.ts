@@ -219,4 +219,94 @@ describe("QQBot inbound known-target recording", () => {
 
     expect(proactiveMocks.upsertKnownQQBotTarget).not.toHaveBeenCalled();
   });
+
+  it("serializes concurrent dispatches for the same resolved session", async () => {
+    const logger = createLogger();
+    let activeDispatches = 0;
+    let maxActiveDispatches = 0;
+    let resolveFirstEntered: (() => void) | undefined;
+    let releaseFirstDispatch: (() => void) | undefined;
+
+    const firstEntered = new Promise<void>((resolve) => {
+      resolveFirstEntered = resolve;
+    });
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirstDispatch = resolve;
+    });
+
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async () => {
+      activeDispatches += 1;
+      maxActiveDispatches = Math.max(maxActiveDispatches, activeDispatches);
+
+      if (dispatchReplyWithBufferedBlockDispatcher.mock.calls.length === 1) {
+        resolveFirstEntered?.();
+        await firstRelease;
+      }
+
+      activeDispatches -= 1;
+    });
+
+    setQQBotRuntime({
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            sessionKey: "shared-session",
+            accountId: "default",
+            agentId: "main",
+          }),
+        },
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher,
+        },
+      },
+    });
+
+    const firstDispatch = handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-serial-1",
+        content: "first",
+        timestamp: 1700000000500,
+        author: {
+          user_openid: "u-serial",
+          username: "Serial User",
+        },
+      },
+      cfg: baseCfg,
+      accountId: "default",
+      logger,
+    });
+
+    await firstEntered;
+
+    const secondDispatch = handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-serial-2",
+        content: "second",
+        timestamp: 1700000000600,
+        author: {
+          user_openid: "u-serial",
+          username: "Serial User",
+        },
+      },
+      cfg: baseCfg,
+      accountId: "default",
+      logger,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("session busy; queueing inbound dispatch sessionKey=shared-session")
+    );
+
+    releaseFirstDispatch?.();
+
+    await Promise.all([firstDispatch, secondDispatch]);
+
+    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+    expect(maxActiveDispatches).toBe(1);
+  });
 });

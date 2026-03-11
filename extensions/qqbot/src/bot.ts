@@ -50,6 +50,38 @@ type DispatchParams = {
   logger?: Logger;
 };
 
+type QQBotAgentRoute = {
+  sessionKey: string;
+  accountId: string;
+  agentId?: string;
+  mainSessionKey?: string;
+};
+
+const sessionDispatchQueue = new Map<string, Promise<void>>();
+
+function buildSessionDispatchQueueKey(route: QQBotAgentRoute): string {
+  const accountId = route.accountId?.trim() || DEFAULT_ACCOUNT_ID;
+  return `${accountId}:${route.sessionKey}`;
+}
+
+async function runSerializedSessionDispatch<T>(
+  queueKey: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const previous = sessionDispatchQueue.get(queueKey) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(task);
+  const cleanup = run.then(() => undefined, () => undefined);
+  sessionDispatchQueue.set(queueKey, cleanup);
+
+  try {
+    return await run;
+  } finally {
+    if (sessionDispatchQueue.get(queueKey) === cleanup) {
+      sessionDispatchQueue.delete(queueKey);
+    }
+  }
+}
+
 function toString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value;
   return undefined;
@@ -1004,15 +1036,10 @@ async function dispatchToAgent(params: {
   qqCfg: QQBotAccountConfig;
   accountId: string;
   logger: Logger;
+  route: QQBotAgentRoute;
 }): Promise<void> {
-  const { inbound, cfg, qqCfg, accountId, logger } = params;
+  const { inbound, cfg, qqCfg, accountId, logger, route } = params;
   const runtime = getQQBotRuntime();
-  const routing = runtime.channel?.routing?.resolveAgentRoute;
-  if (!routing) {
-    logger.warn("routing API not available");
-    return;
-  }
-
   const target = resolveChatTarget(inbound);
   if (inbound.c2cOpenid) {
     const typing = await qqbotOutbound.sendTyping({
@@ -1026,12 +1053,6 @@ async function dispatchToAgent(params: {
       logger.warn(`sendTyping failed: ${typing.error}`);
     }
   }
-  const route = routing({
-    cfg,
-    channel: "qqbot",
-    accountId,
-    peer: { kind: target.peerKind, id: target.peerId },
-  });
 
   const replyApi = runtime.channel?.reply;
   if (!replyApi) {
@@ -1543,11 +1564,33 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     return;
   }
 
-  await dispatchToAgent({
-    inbound: { ...inbound, content },
+  const runtime = getQQBotRuntime();
+  const routing = runtime.channel?.routing?.resolveAgentRoute;
+  if (!routing) {
+    logger.warn("routing API not available");
+    return;
+  }
+
+  const target = resolveChatTarget(inbound);
+  const route = routing({
     cfg: params.cfg,
-    qqCfg,
+    channel: "qqbot",
     accountId,
-    logger,
-  });
+    peer: { kind: target.peerKind, id: target.peerId },
+  }) as QQBotAgentRoute;
+  const queueKey = buildSessionDispatchQueueKey(route);
+  if (sessionDispatchQueue.has(queueKey)) {
+    logger.info(`session busy; queueing inbound dispatch sessionKey=${route.sessionKey}`);
+  }
+
+  await runSerializedSessionDispatch(queueKey, async () =>
+    dispatchToAgent({
+      inbound: { ...inbound, content },
+      cfg: params.cfg,
+      qqCfg,
+      accountId,
+      logger,
+      route,
+    })
+  );
 }
