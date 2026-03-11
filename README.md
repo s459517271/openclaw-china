@@ -92,6 +92,10 @@
 <details>
 <summary><strong>点击展开更新日志</strong></summary>
 
+### 2026-03-11
+- `qqbot` 调整 C2C Markdown transport：私聊 Markdown 回复现在保留原始 Markdown 文本，公网图片自动补 QQ 图片尺寸语法，本地图片继续走富媒体 API。
+- `qqbot` 新增 `c2cMarkdownDeliveryMode` 的整条回复级主动/被动策略说明；对于“带表格后标题、引用、任务列表等 Markdown 不稳定”的场景，推荐直接使用 `proactive-all`。
+- `qqbot` 修复 C2C Markdown transport 复用表格转换后导致标题、引用、列表等语法被改写的问题，并恢复“带表格时默认整条单消息发送”以避免内容截断。
 
 ### 2026-03-10
 - 修复 `wecom-app` 在开启 `/verbose on` 后将工具日志合并到单条消息、并在任务结束后才一次性发送的问题；现在会按 chunk 逐段主动发送，提升长任务场景下的实时反馈。
@@ -359,6 +363,8 @@ cp -a ~/.openclaw/extensions/openclaw-china/extensions/wecom-app/skills/wecom-ap
 openclaw config set channels.qqbot.enabled true
 openclaw config set channels.qqbot.appId your-app-id
 openclaw config set channels.qqbot.clientSecret your-app-secret
+openclaw config set channels.qqbot.markdownSupport true
+openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
 openclaw config set channels.qqbot.autoSendLocalPathMedia false
 ```
 
@@ -382,6 +388,21 @@ openclaw config set channels.qqbot.asr.secretKey your-tencent-secret-key
 ```bash
 openclaw config set channels.qqbot.autoSendLocalPathMedia false
 ```
+
+私聊 C2C Markdown 渲染建议：
+
+- 如果你希望 QQ 私聊尽量完整渲染标题、引用、分割线、任务列表、表格等 Markdown，建议显式开启：
+
+```bash
+openclaw config set channels.qqbot.markdownSupport true
+openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
+```
+
+- `passive`：整条 C2C Markdown 回复保持被动发送
+- `proactive-table-only`：仅当回复里出现 Markdown 表格时，整条 C2C 回复改走主动发送
+- `proactive-all`：所有 C2C Markdown 回复统一改走主动发送
+- C2C 主动 Markdown transport 会尽量保留原始 Markdown，并默认整条单消息发送；只有超出长度限制时才继续分块
+- 如果你发现“不带表格时基本正常，但带表格后标题、引用、任务列表不稳定”，优先使用 `proactive-all`；这通常是 QQ 被动回复接口本身的渲染限制
 
 主动发送与已知目标：
 

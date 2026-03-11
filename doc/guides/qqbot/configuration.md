@@ -142,33 +142,13 @@ openclaw config set gateway.http.endpoints.chatCompletions.enabled true
 | requireMention | boolean | true | 群聊是否必须 @ 机器人 |
 | allowFrom | string[] | [] | 私聊白名单 |
 | groupAllowFrom | string[] | [] | 群聊白名单 |
-| textChunkLimit | number | 1500 | 文本分块长度 |
+| textChunkLimit | number | 1500 | 文本分块长度；C2C Markdown transport 默认尽量保持整条单消息发送，仅在超过长度限制时才分块 |
 | replyFinalOnly | boolean | false | 是否仅发送最终回复文本（不会阻断媒体工具结果，如 TTS 语音） |
 | c2cMarkdownDeliveryMode | string | "proactive-table-only" | 私聊 C2C Markdown transport 发送策略：`passive` 保持整条回复走被动接口，`proactive-table-only` 在回复中检测到 Markdown 表格时让整条回复改走主动接口，`proactive-all` 让所有私聊 Markdown 回复统一走主动接口 |
 | autoSendLocalPathMedia | boolean | true | 是否自动把回复文本中的本地图片路径识别为媒体并发送；设为 `false` 时，类似 `/root/.openclaw/media/qqbot/inbound/...jpeg` 的路径会保留在文本里，适合展示“证据 / 文件路径：...” |
 | longTaskNoticeDelayMs | number | 30000 | 首条正式回复超过该时长仍未发送时，自动补发“任务处理时间较长，请稍等，我还在继续处理。”；设为 `0` 可关闭 |
 
-### 3.1 私聊 Markdown 渲染策略
 
-如需通过配置控制 QQ 私聊的 Markdown 发送方式，可以设置：
-
-```bash
-openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
-```
-
-可选值：
-
-- `passive`：整条 C2C Markdown 回复保持被动发送，Markdown 文本和本地富媒体都会保留 `replyToId/replyEventId`
-- `proactive-table-only`：当最终回复里包含 Markdown 表格时，整条 C2C 回复统一改走主动发送
-- `proactive-all`：所有 C2C Markdown 回复统一在回复结束后走主动发送，适合兼容标题、引用、分割线、表格等渲染问题
-
-说明：
-
-- C2C 文本回复现在走 README-compatible Markdown transport：先发送本地富媒体，再发送最终 Markdown 文本
-- 回复里的公网图片 Markdown 和裸 HTTP 图片 URL 会自动补成 QQBot 要求的 `![#宽px #高px](url)` 格式
-- 本地图片路径继续走 QQ 富媒体 API，不会把本地绝对路径直接回显给用户
-- 上述行为只覆盖 C2C 私聊；群聊和频道仍保持原有发送逻辑
-- `c2cMarkdownDeliveryMode` 控制的是“整条 C2C Markdown 回复”的主动/被动发送策略，不再只是单段文本是否改走主动消息
 
 ### 3. 常见场景：保留证据路径为文本
 
@@ -189,7 +169,21 @@ openclaw config set channels.qqbot.autoSendLocalPathMedia false
 - `autoSendLocalPathMedia=true`：裸本地图片路径会自动作为媒体发送
 - `autoSendLocalPathMedia=false`：裸本地图片路径保留为文本
 - 显式 `MEDIA:` 指令仍会继续按媒体发送
+- 
+### 3.1 私聊 Markdown 渲染策略
 
+如需通过配置控制 QQ 私聊的 Markdown 发送方式，可以设置：
+
+```bash
+openclaw config set channels.qqbot.c2cMarkdownDeliveryMode proactive-all
+```
+
+可选值：
+
+- `passive`：整条 C2C Markdown 回复保持被动发送，Markdown 文本和本地富媒体都会保留 `replyToId/replyEventId`
+- `proactive-table-only`：当最终回复里包含 Markdown 表格时，整条 C2C 回复统一改走主动发送
+- `proactive-all`：所有 C2C Markdown 回复统一在回复结束后走主动发送，适合兼容标题、引用、分割线、表格等渲染问题
+  
 ### 4. 多账户配置
 
 如需配置多个 QQ 机器人，可以使用 `accounts` 对象（键为账户 ID）：
