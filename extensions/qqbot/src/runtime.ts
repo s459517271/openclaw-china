@@ -52,6 +52,18 @@ export interface PluginRuntime {
         dispatcher?: unknown;
         replyOptions?: unknown;
       }) => Promise<{ queuedFinal: boolean; counts: { final: number } }>;
+      dispatchReplyWithDispatcher?: (params: {
+        ctx: unknown;
+        cfg: unknown;
+        dispatcherOptions: {
+          deliver: (payload: unknown, info?: { kind?: string }) => Promise<void> | void;
+          onError?: (err: unknown, info: { kind: string }) => void;
+          onSkip?: (payload: unknown, info: { kind: string; reason: string }) => void;
+          onReplyStart?: () => Promise<void> | void;
+          humanDelay?: unknown;
+        };
+        replyOptions?: unknown;
+      }) => Promise<unknown>;
       dispatchReplyWithBufferedBlockDispatcher?: (params: {
         ctx: unknown;
         cfg: unknown;

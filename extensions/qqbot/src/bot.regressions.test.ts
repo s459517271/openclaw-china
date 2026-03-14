@@ -43,6 +43,7 @@ function setupRuntime(params?: {
     accountId?: string;
     peer: { kind: string; id: string };
   }) => { sessionKey: string; accountId: string; agentId?: string };
+  dispatchReplyWithDispatcher?: ReturnType<typeof vi.fn>;
   dispatchReplyWithBufferedBlockDispatcher?: ReturnType<typeof vi.fn>;
 }) {
   const readSessionUpdatedAt = vi.fn().mockReturnValue(null);
@@ -66,6 +67,11 @@ function setupRuntime(params?: {
       },
       reply: {
         finalizeInboundContext: (ctx: unknown) => ctx,
+        ...(params?.dispatchReplyWithDispatcher
+          ? {
+              dispatchReplyWithDispatcher: params.dispatchReplyWithDispatcher,
+            }
+          : {}),
         dispatchReplyWithBufferedBlockDispatcher,
       },
       session: {
@@ -206,6 +212,63 @@ describe("QQBot reported regressions", () => {
         accountId: "snake",
       })
     );
+  });
+
+  it("prefers the direct c2c dispatcher so assistant notes stay interleaved with tool logs", async () => {
+    const dispatchReplyWithDispatcher = vi.fn(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "先说明一下当前步骤。" }, { kind: "block" });
+      await dispatcherOptions.deliver({ text: "exec: listing files" }, { kind: "tool" });
+      await dispatcherOptions.deliver({ text: "我再继续检查配置。" }, { kind: "block" });
+      await dispatcherOptions.deliver({ text: "exec: reading monitor.ts" }, { kind: "tool" });
+      await dispatcherOptions.deliver({ text: "检查完了。" }, { kind: "final" });
+    });
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "exec: listing files" }, { kind: "tool" });
+      await dispatcherOptions.deliver({ text: "exec: reading monitor.ts" }, { kind: "tool" });
+      await dispatcherOptions.deliver({ text: "先说明一下当前步骤。" }, { kind: "block" });
+      await dispatcherOptions.deliver({ text: "我再继续检查配置。" }, { kind: "block" });
+      await dispatcherOptions.deliver({ text: "检查完了。" }, { kind: "final" });
+    });
+    const logger = createLogger();
+
+    setupRuntime({
+      dispatchReplyWithDispatcher,
+      dispatchReplyWithBufferedBlockDispatcher,
+    });
+
+    await handleQQBotDispatch({
+      eventType: "C2C_MESSAGE_CREATE",
+      eventData: {
+        id: "msg-interleave-1",
+        event_id: "evt-interleave-1",
+        content: "show progress",
+        timestamp: 1700000100500,
+        author: {
+          user_openid: "U-INTERLEAVE",
+          username: "Interleave User",
+        },
+      },
+      cfg: baseCfg,
+      accountId: "dragon",
+      logger,
+    });
+
+    expect(dispatchReplyWithDispatcher).toHaveBeenCalledTimes(1);
+    expect(dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    expect(dispatchReplyWithDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyOptions: {
+          disableBlockStreaming: false,
+        },
+      })
+    );
+    expect(outboundMocks.sendText.mock.calls.map((call) => call[0]?.text)).toEqual([
+      "先说明一下当前步骤。",
+      "exec: listing files",
+      "我再继续检查配置。",
+      "exec: reading monitor.ts",
+      "检查完了。",
+    ]);
   });
 
   it("keeps isolated direct sessions linked back to the main route for history across accounts", async () => {

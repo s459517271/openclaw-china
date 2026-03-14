@@ -1743,7 +1743,8 @@ async function dispatchToAgent(params: {
     const replyFinalOnly = qqCfg.replyFinalOnly ?? false;
     const markdownSupport = qqCfg.markdownSupport ?? true;
     const c2cMarkdownDeliveryMode = qqCfg.c2cMarkdownDeliveryMode ?? "proactive-table-only";
-    const useC2CMarkdownTransport = markdownSupport && isQQBotC2CTarget(target.to);
+    const isC2CTarget = isQQBotC2CTarget(target.to);
+    const useC2CMarkdownTransport = markdownSupport && isC2CTarget;
     let bufferedC2CMarkdownTexts: string[] = [];
     let bufferedC2CMarkdownMediaUrls: string[] = [];
     const bufferedC2CMarkdownMediaSeen = new Set<string>();
@@ -1970,8 +1971,36 @@ async function dispatchToAgent(params: {
     };
 
     const humanDelay = replyApi.resolveHumanDelayConfig?.(cfg, route.agentId);
+    const dispatchDirect = replyApi.dispatchReplyWithDispatcher;
     const dispatchBuffered = replyApi.dispatchReplyWithBufferedBlockDispatcher;
-    if (dispatchBuffered) {
+    const streamingReplyOptions =
+      isC2CTarget && !replyFinalOnly
+        ? {
+            disableBlockStreaming: false,
+          }
+        : undefined;
+    if (isC2CTarget && !replyFinalOnly && dispatchDirect) {
+      logger.debug(`[dispatch] mode=direct session=${routeSessionKey} to=${target.to}`);
+      await dispatchDirect({
+        ctx: finalCtx,
+        cfg,
+        dispatcherOptions: {
+          deliver,
+          humanDelay,
+          onError: (err: unknown, info: { kind: string }) => {
+            logger.error(`${info.kind} reply failed: ${String(err)}`);
+          },
+          onSkip: (_payload: unknown, info: { kind: string; reason: string }) => {
+            if (info.reason !== "silent") {
+              logger.info(`reply skipped: ${info.reason}`);
+            }
+          },
+        },
+        replyOptions: streamingReplyOptions,
+      });
+      await flushBufferedC2CMarkdownReply();
+    } else if (dispatchBuffered) {
+      logger.debug(`[dispatch] mode=buffered session=${routeSessionKey} to=${target.to}`);
       await dispatchBuffered({
         ctx: finalCtx,
         cfg,
@@ -1987,9 +2016,11 @@ async function dispatchToAgent(params: {
             }
           },
         },
+        replyOptions: streamingReplyOptions,
       });
       await flushBufferedC2CMarkdownReply();
     } else {
+      logger.debug(`[dispatch] mode=legacy session=${routeSessionKey} to=${target.to}`);
       const dispatcherResult = replyApi.createReplyDispatcherWithTyping
         ? replyApi.createReplyDispatcherWithTyping({
             deliver,
@@ -2019,7 +2050,12 @@ async function dispatchToAgent(params: {
         ctx: finalCtx,
         cfg,
         dispatcher: dispatcherResult.dispatcher,
-        replyOptions: dispatcherResult.replyOptions,
+        replyOptions: {
+          ...(typeof dispatcherResult.replyOptions === "object" && dispatcherResult.replyOptions
+            ? dispatcherResult.replyOptions
+            : {}),
+          ...(streamingReplyOptions ?? {}),
+        },
       });
 
       dispatcherResult.markDispatchIdle?.();

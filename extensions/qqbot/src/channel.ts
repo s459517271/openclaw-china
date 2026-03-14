@@ -385,12 +385,21 @@ export const qqbotPlugin = {
         const candidate = ctx.runtime as {
           channel?: {
             routing?: { resolveAgentRoute?: unknown };
-            reply?: { dispatchReplyFromConfig?: unknown };
+            reply?: {
+              dispatchReplyFromConfig?: unknown;
+              dispatchReplyWithBufferedBlockDispatcher?: unknown;
+              dispatchReplyWithDispatcher?: unknown;
+            };
           };
         };
+        const hasRouting = Boolean(candidate.channel?.routing?.resolveAgentRoute);
+        const hasReply =
+          Boolean(candidate.channel?.reply?.dispatchReplyWithDispatcher) ||
+          Boolean(candidate.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) ||
+          Boolean(candidate.channel?.reply?.dispatchReplyFromConfig);
         if (
-          candidate.channel?.routing?.resolveAgentRoute &&
-          candidate.channel?.reply?.dispatchReplyFromConfig
+          hasRouting &&
+          hasReply
         ) {
           setQQBotRuntime(ctx.runtime as Record<string, unknown>);
         }
