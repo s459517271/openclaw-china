@@ -74,6 +74,7 @@ function createWebhookAccount(path: string): ResolvedWecomAccount {
     heartbeatIntervalMs: 30_000,
     reconnectInitialDelayMs: 1_000,
     reconnectMaxDelayMs: 30_000,
+    wsImageReplyMode: "native",
     config: {
       mode: "webhook",
       webhookPath: path,

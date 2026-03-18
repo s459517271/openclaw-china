@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import crypto from "node:crypto";
+import { createHash } from "node:crypto";
 
 import WebSocket from "ws";
 
@@ -18,6 +19,16 @@ type PendingResolver = {
   resolve: (frame: WsFrame) => void;
   reject: (err: Error) => void;
 };
+
+let mockDisconnectErrorMessage: string | null = null;
+
+export function setMockDisconnectErrorMessage(message: string | null): void {
+  mockDisconnectErrorMessage = message?.trim() ? message : null;
+}
+
+export function resetMockSdkBehavior(): void {
+  mockDisconnectErrorMessage = null;
+}
 
 export class WSClient extends EventEmitter {
   private readonly botId: string;
@@ -111,6 +122,11 @@ export class WSClient extends EventEmitter {
 
   disconnect(): void {
     this.clearHeartbeat();
+    if (mockDisconnectErrorMessage) {
+      queueMicrotask(() => {
+        this.emit("error", new Error(mockDisconnectErrorMessage ?? "mock disconnect error"));
+      });
+    }
     this.socket?.close();
     this.socket = null;
   }
@@ -144,6 +160,97 @@ export class WSClient extends EventEmitter {
         ...body,
       },
     });
+  }
+
+  async replyMedia(
+    frame: { headers?: { req_id?: string } },
+    mediaType: "file" | "image" | "voice" | "video",
+    mediaId: string
+  ): Promise<WsFrame> {
+    return this.reply(frame, {
+      msgtype: mediaType,
+      [mediaType]: {
+        media_id: mediaId,
+      },
+    });
+  }
+
+  async sendMediaMessage(
+    chatid: string,
+    mediaType: "file" | "image" | "voice" | "video",
+    mediaId: string
+  ): Promise<WsFrame> {
+    return this.sendMessage(chatid, {
+      msgtype: mediaType,
+      [mediaType]: {
+        media_id: mediaId,
+      },
+    });
+  }
+
+  async uploadMedia(
+    fileBuffer: Buffer,
+    options: { type: "file" | "image" | "voice" | "video"; filename: string }
+  ): Promise<{ type: string; media_id: string; created_at: number }> {
+    const md5 = createHash("md5").update(fileBuffer).digest("hex");
+    const initFrame = await this.sendFrame({
+      cmd: "aibot_upload_media_init",
+      headers: {
+        req_id: crypto.randomUUID(),
+      },
+      body: {
+        type: options.type,
+        filename: options.filename,
+        total_size: fileBuffer.length,
+        total_chunks: 1,
+        md5,
+      },
+    });
+    const uploadId =
+      String((initFrame.body as { upload_id?: string } | undefined)?.upload_id ?? "").trim() ||
+      `upload-${crypto.randomUUID()}`;
+    await this.sendFrame({
+      cmd: "aibot_upload_media_chunk",
+      headers: {
+        req_id: crypto.randomUUID(),
+      },
+      body: {
+        upload_id: uploadId,
+        chunk_index: 0,
+        total_chunks: 1,
+        data: fileBuffer.toString("base64"),
+      },
+    });
+    const finishFrame = await this.sendFrame({
+      cmd: "aibot_upload_media_finish",
+      headers: {
+        req_id: crypto.randomUUID(),
+      },
+      body: {
+        upload_id: uploadId,
+        md5,
+      },
+    });
+    const body = (finishFrame.body as { media_id?: string; created_at?: number } | undefined) ?? {};
+    return {
+      type: options.type,
+      media_id: String(body.media_id ?? "").trim() || `media-${crypto.randomUUID()}`,
+      created_at: typeof body.created_at === "number" ? body.created_at : Date.now(),
+    };
+  }
+
+  async downloadFile(url: string, _aesKey?: string): Promise<{ buffer: Buffer; filename?: string }> {
+    let filename: string | undefined;
+    try {
+      const parsed = new URL(url);
+      filename = parsed.pathname.split("/").filter(Boolean).pop();
+    } catch {
+      filename = undefined;
+    }
+    return {
+      buffer: Buffer.from(`downloaded:${url}`, "utf8"),
+      filename,
+    };
   }
 
   private async sendFrame(frame: WsFrame): Promise<WsFrame> {

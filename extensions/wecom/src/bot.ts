@@ -38,9 +38,11 @@ import { buildWecomNativeReplyImageItem, WECOM_REPLY_MSG_ITEM_LIMIT, type WecomR
 import { consumeWecomWsPendingAutoImagePaths, registerWecomWsPendingAutoImagePaths } from "./ws-reply-context.js";
 
 export type WecomDispatchHooks = {
+  onAccepted?: () => void;
   onRouteContext?: (context: { sessionKey?: string; runId?: string }) => void;
   onChunk: (text: string) => void | Promise<void>;
   onRichChunk?: (chunk: WecomWsReplyChunk) => void | Promise<void>;
+  onSkip?: (info: { kind: string; reason: string }) => void;
   onError?: (err: unknown) => void;
 };
 
@@ -48,6 +50,19 @@ export type WecomWsReplyChunk = {
   text: string;
   msgItems: WecomReplyMsgItem[];
 };
+
+export type WecomDownloadedMedia = {
+  buffer: Buffer;
+  fileName?: string;
+  contentType?: string;
+};
+
+export type WecomMediaDownloader = (params: {
+  mediaUrl: string;
+  decryptionKey: string;
+  fileName?: string;
+  log?: Logger;
+}) => Promise<WecomDownloadedMedia>;
 
 function resolveOpenClawStateDir(): string {
   const override = process.env.OPENCLAW_STATE_DIR?.trim() || process.env.CLAWDBOT_STATE_DIR?.trim();
@@ -350,6 +365,7 @@ export async function dispatchWecomMessage(params: {
   msg: WecomInboundMessage;
   core: PluginRuntime;
   hooks: WecomDispatchHooks;
+  mediaDownloader?: WecomMediaDownloader;
   log?: (msg: string) => void;
   error?: (msg: string) => void;
 }): Promise<void> {
@@ -423,11 +439,17 @@ export async function dispatchWecomMessage(params: {
     accountId: account.accountId,
     peer: { kind: chatType === "group" ? "group" : "dm", id: chatId },
   });
+  try {
+    hooks.onAccepted?.();
+  } catch (err) {
+    logger.warn(`wecom accepted hook failed: ${String(err)}`);
+  }
 
   // 处理媒体文件（下载和解密）
   const mediaResult = await processMediaInMessage({
     msg,
     encodingAESKey: account.encodingAESKey,
+    downloadMedia: params.mediaDownloader,
     log: logger,
   });
 
@@ -630,6 +652,9 @@ export async function dispatchWecomMessage(params: {
           if (!normalized.trim()) return;
           await hooks.onChunk(normalized);
         },
+        onSkip: (_payload: unknown, info: { kind: string; reason: string }) => {
+          hooks.onSkip?.(info);
+        },
         onError: (err: unknown, info: { kind: string }) => {
           hooks.onError?.(err);
           logger.error(`${info.kind} reply failed: ${String(err)}`);
@@ -691,10 +716,12 @@ export async function downloadAndDecryptMedia(params: {
   decryptionKey: string;
   /** 原始文件名（可选，用于确定文件扩展名） */
   fileName?: string;
+  /** 可选的自定义下载器；ws 模式下优先使用 SDK downloadFile() */
+  downloadMedia?: WecomMediaDownloader;
   /** 日志记录器（可选） */
   log?: Logger;
 }): Promise<DownloadedMediaFile> {
-  const { mediaUrl, decryptionKey, fileName, log } = params;
+  const { mediaUrl, decryptionKey, fileName, downloadMedia, log } = params;
 
   if (!mediaUrl) {
     throw new Error("mediaUrl is required");
@@ -704,50 +731,66 @@ export async function downloadAndDecryptMedia(params: {
     throw new Error("decryptionKey is required");
   }
 
-  // 步骤 1: 下载加密的媒体文件
-  log?.debug?.(`[wecom] 下载加密媒体文件: ${mediaUrl.slice(0, 100)}...`);
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), MEDIA_DOWNLOAD_TIMEOUT);
-
-  let encryptedBuffer: Buffer;
   let contentType = "application/octet-stream";
   let contentDisposition: string | null = null;
-
-  try {
-    const response = await fetch(mediaUrl, { signal: controller.signal });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    contentType = response.headers.get("content-type") || "application/octet-stream";
-    contentDisposition = response.headers.get("content-disposition");
-    const arrayBuffer = await response.arrayBuffer();
-    encryptedBuffer = Buffer.from(arrayBuffer);
-
-    log?.debug?.(`[wecom] 下载完成: ${encryptedBuffer.length} 字节`);
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`媒体下载超时（${MEDIA_DOWNLOAD_TIMEOUT}ms）`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  // 步骤 2: 解密媒体文件
-  log?.debug?.(`[wecom] 解密媒体文件...`);
-
+  let downloadedFileName = fileName;
   let decryptedBuffer: Buffer;
-  try {
-    decryptedBuffer = decryptWecomMedia({
-      encryptedBuffer,
+
+  if (downloadMedia) {
+    log?.debug?.(`[wecom] 使用 SDK 下载媒体文件: ${mediaUrl.slice(0, 100)}...`);
+    const downloaded = await downloadMedia({
+      mediaUrl,
       decryptionKey,
+      fileName,
+      log,
     });
-    log?.debug?.(`[wecom] 解密完成: ${decryptedBuffer.length} 字节`);
-  } catch (err) {
-    throw new Error(`解密失败: ${err instanceof Error ? err.message : String(err)}`);
+    decryptedBuffer = downloaded.buffer;
+    downloadedFileName = downloaded.fileName ?? downloadedFileName;
+    contentType = downloaded.contentType || contentType;
+    log?.debug?.(`[wecom] SDK 下载完成: ${decryptedBuffer.length} 字节`);
+  } else {
+    // 步骤 1: 下载加密的媒体文件
+    log?.debug?.(`[wecom] 下载加密媒体文件: ${mediaUrl.slice(0, 100)}...`);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), MEDIA_DOWNLOAD_TIMEOUT);
+
+    let encryptedBuffer: Buffer;
+
+    try {
+      const response = await fetch(mediaUrl, { signal: controller.signal });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      contentType = response.headers.get("content-type") || "application/octet-stream";
+      contentDisposition = response.headers.get("content-disposition");
+      const arrayBuffer = await response.arrayBuffer();
+      encryptedBuffer = Buffer.from(arrayBuffer);
+
+      log?.debug?.(`[wecom] 下载完成: ${encryptedBuffer.length} 字节`);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(`媒体下载超时（${MEDIA_DOWNLOAD_TIMEOUT}ms）`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    // 步骤 2: 解密媒体文件
+    log?.debug?.(`[wecom] 解密媒体文件...`);
+
+    try {
+      decryptedBuffer = decryptWecomMedia({
+        encryptedBuffer,
+        decryptionKey,
+      });
+      log?.debug?.(`[wecom] 解密完成: ${decryptedBuffer.length} 字节`);
+    } catch (err) {
+      throw new Error(`解密失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // 步骤 3: 保存到 OpenClaw 状态目录下的统一媒体目录
@@ -764,7 +807,7 @@ export async function downloadAndDecryptMedia(params: {
     return cleaned.length > 200 ? cleaned.slice(0, 200) : cleaned;
   };
 
-  let originalFileName = sanitizeFileName(fileName);
+  let originalFileName = sanitizeFileName(downloadedFileName);
   if (contentDisposition && !originalFileName) {
     // 解析 Content-Disposition: attachment; filename="文件名.jpg"
     const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
@@ -835,9 +878,10 @@ export async function downloadAndDecryptMedia(params: {
 export async function processMediaInMessage(params: {
   msg: WecomInboundMessage;
   encodingAESKey?: string;
+  downloadMedia?: WecomMediaDownloader;
   log?: Logger;
 }): Promise<{ text: string; imagePaths: string[] }> {
-  const { msg, encodingAESKey, log } = params;
+  const { msg, encodingAESKey, downloadMedia, log } = params;
   const imagePaths: string[] = [];
 
   const msgtype = String(msg.msgtype ?? "").toLowerCase();
@@ -872,6 +916,7 @@ export async function processMediaInMessage(params: {
                 mediaUrl: url,
                 decryptionKey,
                 fileName: "image.jpg",
+                downloadMedia,
                 log,
               });
               processedParts.push(`[image] ${mediaFile.path}`);
@@ -893,6 +938,7 @@ export async function processMediaInMessage(params: {
                 mediaUrl: url,
                 decryptionKey,
                 fileName,
+                downloadMedia,
                 log,
               });
               processedParts.push(`[file] ${mediaFile.path}`);
@@ -926,6 +972,7 @@ export async function processMediaInMessage(params: {
           mediaUrl: url,
           decryptionKey,
           fileName: "image.jpg", // 默认文件名
+          downloadMedia,
           log,
         });
         return {
@@ -952,6 +999,7 @@ export async function processMediaInMessage(params: {
           mediaUrl: url,
           decryptionKey,
           fileName,
+          downloadMedia,
           log,
         });
         return {
@@ -977,6 +1025,7 @@ export async function processMediaInMessage(params: {
           mediaUrl: url,
           decryptionKey,
           fileName: "voice.amr", // 默认文件名
+          downloadMedia,
           log,
         });
         return {

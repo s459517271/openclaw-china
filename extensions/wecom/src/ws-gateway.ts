@@ -1,20 +1,26 @@
+import path from "node:path";
+
 import { WSClient, type SendMsgBody, type WsFrame as SdkWsFrame } from "@wecom/aibot-node-sdk";
 
 import type { PluginConfig } from "./config.js";
 import { createLogger, type Logger } from "@openclaw-china/shared";
 import type { ResolvedWecomAccount } from "./types.js";
 import { dispatchWecomMessage } from "./bot.js";
+import { fetchAndSaveWecomDocMcpConfig } from "./mcp-config.js";
 import { tryGetWecomRuntime } from "./runtime.js";
 import {
+  WECOM_WS_THINKING_MESSAGE,
   appendWecomWsActiveStreamChunk,
   appendWecomWsActiveStreamReply,
   bindWecomWsRouteContext,
   clearWecomWsReplyContextsForAccount,
+  markWecomWsMessageContextSkipped,
   registerWecomWsEventContext,
   registerWecomWsMessageContext,
   scheduleWecomWsMessageContextFinish,
+  sendWecomWsMessagePlaceholder,
 } from "./ws-reply-context.js";
-import { normalizeWecomWsCallback, type WecomWsFrame } from "./ws-protocol.js";
+import { normalizeWecomWsCallback, type WecomWsFrame, type WecomWsNativeMediaType } from "./ws-protocol.js";
 
 type WecomRuntimeEnv = {
   log?: (message: string) => void;
@@ -38,6 +44,7 @@ type ActiveConnection = {
 const activeConnections = new Map<string, ActiveConnection>();
 const processedMessageIds = new Map<string, number>();
 const PROCESSED_MESSAGE_TTL_MS = 10 * 60 * 1000;
+const WECOM_WS_SHUTDOWN_GRACE_MS = 1_000;
 const activatedTargets = new Map<
   string,
   {
@@ -176,7 +183,16 @@ function summarizeWecomReplyFrame(frame: WecomWsFrame): string {
   return JSON.stringify(summary);
 }
 
-function createSdkLogger(logger: Logger) {
+function isExpectedShutdownWsLog(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("invalid websocket frame") ||
+    lowered.includes("invalid opcode") ||
+    lowered.includes("websocket connection closed: code: 1006")
+  );
+}
+
+function createSdkLogger(logger: Logger, opts?: { isShuttingDown?: () => boolean }) {
   return {
     debug(message: string, ...args: unknown[]) {
       logger.debug(formatLogMessage(message, args));
@@ -185,12 +201,27 @@ function createSdkLogger(logger: Logger) {
       logger.info(formatLogMessage(message, args));
     },
     warn(message: string, ...args: unknown[]) {
-      logger.warn(formatLogMessage(message, args));
+      const formatted = formatLogMessage(message, args);
+      if (opts?.isShuttingDown?.() && isExpectedShutdownWsLog(formatted)) {
+        logger.debug(`wecom ws shutdown noise suppressed: ${formatted}`);
+        return;
+      }
+      logger.warn(formatted);
     },
     error(message: string, ...args: unknown[]) {
-      logger.error(formatLogMessage(message, args));
+      const formatted = formatLogMessage(message, args);
+      if (opts?.isShuttingDown?.() && isExpectedShutdownWsLog(formatted)) {
+        logger.debug(`wecom ws shutdown noise suppressed: ${formatted}`);
+        return;
+      }
+      logger.error(formatted);
     },
   };
+}
+
+function isExpectedShutdownWsError(error: Error): boolean {
+  const message = error.message.toLowerCase();
+  return message.includes("invalid websocket frame") || message.includes("invalid opcode");
 }
 
 function requireActiveClient(accountId: string): WSClient {
@@ -283,6 +314,69 @@ export async function sendWecomWsProactiveTemplateCard(params: {
   });
 }
 
+export async function uploadWecomWsLocalMedia(params: {
+  accountId: string;
+  filePath: string;
+  mediaType: WecomWsNativeMediaType;
+  filename?: string;
+}): Promise<{ mediaId: string; createdAt?: number }> {
+  const client = requireActiveClient(params.accountId);
+  const sourcePath = params.filePath.trim();
+  if (!sourcePath) {
+    throw new Error("WeCom ws media upload requires a local file path");
+  }
+  const fileBuffer = await import("node:fs/promises").then((fs) => fs.readFile(sourcePath));
+  const filename = params.filename?.trim() || path.basename(sourcePath);
+  const result = await client.uploadMedia(fileBuffer, {
+    type: params.mediaType,
+    filename,
+  });
+  const mediaId = String(result.media_id ?? "").trim();
+  if (!mediaId) {
+    throw new Error(`WeCom ws upload returned empty media_id for ${filename}`);
+  }
+  return {
+    mediaId,
+    createdAt: typeof result.created_at === "number" ? result.created_at : undefined,
+  };
+}
+
+export async function downloadWecomWsMedia(params: {
+  accountId: string;
+  mediaUrl: string;
+  decryptionKey: string;
+}): Promise<{ buffer: Buffer; fileName?: string }> {
+  const client = requireActiveClient(params.accountId);
+  const result = await client.downloadFile(params.mediaUrl, params.decryptionKey);
+  return {
+    buffer: result.buffer,
+    fileName: result.filename?.trim() || undefined,
+  };
+}
+
+export async function sendWecomWsProactiveMedia(params: {
+  accountId: string;
+  to: string;
+  mediaType: WecomWsNativeMediaType;
+  mediaId: string;
+}): Promise<void> {
+  const activated = getActivatedTarget(params.accountId, params.to);
+  if (!activated) {
+    throw new Error(
+      `No activated WeCom ws conversation found for ${params.to}. The user or group must have sent at least one message in this runtime before proactive send is allowed.`
+    );
+  }
+  const mediaId = params.mediaId.trim();
+  if (!mediaId) {
+    throw new Error("WeCom ws proactive media send requires a media_id");
+  }
+  const client = requireActiveClient(params.accountId);
+  const response = await client.sendMediaMessage(activated.chatId, params.mediaType, mediaId);
+  if (typeof response.errcode === "number" && response.errcode !== 0) {
+    throw new Error(`WeCom proactive media send failed: ${response.errcode} ${response.errmsg ?? ""}`.trim());
+  }
+}
+
 export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Promise<void> {
   const { account, cfg, runtime, abortSignal, setStatus } = opts;
   const logger = buildLogger(runtime);
@@ -297,6 +391,8 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
 
   conn.promise = new Promise<void>((resolve, reject) => {
     let finished = false;
+    let shuttingDown = false;
+    let shutdownTimer: NodeJS.Timeout | null = null;
 
     const client = new WSClient({
       botId: account.botId ?? "",
@@ -305,20 +401,19 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
       heartbeatInterval: account.heartbeatIntervalMs,
       reconnectInterval: account.reconnectInitialDelayMs,
       maxReconnectAttempts: -1,
-      logger: createSdkLogger(logger),
+      logger: createSdkLogger(logger, { isShuttingDown: () => shuttingDown }),
     });
     conn.client = client;
 
-    const finish = (err?: unknown) => {
+    const cleanup = (err?: unknown) => {
       if (finished) return;
       finished = true;
+      if (shutdownTimer) {
+        clearTimeout(shutdownTimer);
+        shutdownTimer = null;
+      }
       abortSignal?.removeEventListener("abort", onAbort);
       client.removeAllListeners();
-      try {
-        client.disconnect();
-      } catch {
-        // ignore
-      }
       clearWecomWsReplyContextsForAccount(account.accountId);
       clearActivatedTargetsForAccount(account.accountId);
       conn.client = null;
@@ -335,9 +430,31 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
       else resolve();
     };
 
+    const beginShutdown = (err?: unknown) => {
+      if (finished) return;
+      if (shuttingDown) {
+        if (err) {
+          cleanup(err);
+        }
+        return;
+      }
+      shuttingDown = true;
+      abortSignal?.removeEventListener("abort", onAbort);
+      shutdownTimer = setTimeout(() => {
+        logger.warn(`wecom ws shutdown timed out for account ${account.accountId}; forcing cleanup`);
+        cleanup(err);
+      }, WECOM_WS_SHUTDOWN_GRACE_MS);
+      shutdownTimer.unref?.();
+      try {
+        client.disconnect();
+      } catch (disconnectErr) {
+        cleanup(err ?? disconnectErr);
+      }
+    };
+
     const onAbort = () => {
       logger.info("abort signal received, stopping wecom ws gateway");
-      finish();
+      beginShutdown();
     };
 
     const handleMessageCallback = (frame: SdkWsFrame) => {
@@ -378,13 +495,35 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
         account,
         msg: callback.msg,
         core,
+        mediaDownloader: ({ mediaUrl, decryptionKey }) =>
+          downloadWecomWsMedia({
+            accountId: account.accountId,
+            mediaUrl,
+            decryptionKey,
+          }),
         hooks: {
+          onAccepted: () => {
+            void sendWecomWsMessagePlaceholder({
+              accountId: account.accountId,
+              reqId: callback.reqId,
+              content: WECOM_WS_THINKING_MESSAGE,
+            }).catch((err) => {
+              logger.warn(`wecom ws placeholder ack failed: ${String(err)}`);
+            });
+          },
           onRouteContext: (context) => {
             bindWecomWsRouteContext({
               accountId: account.accountId,
               reqId: callback.reqId,
               sessionKey: context.sessionKey,
               runId: context.runId,
+            });
+          },
+          onSkip: (info) => {
+            markWecomWsMessageContextSkipped({
+              accountId: account.accountId,
+              reqId: callback.reqId,
+              reason: info.reason,
             });
           },
           onChunk: async (text) => {
@@ -517,6 +656,12 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
         account,
         msg: callback.msg,
         core,
+        mediaDownloader: ({ mediaUrl, decryptionKey }) =>
+          downloadWecomWsMedia({
+            accountId: account.accountId,
+            mediaUrl,
+            decryptionKey,
+          }),
         hooks: {
           onChunk: async () => {
             // Event callbacks do not use text chunk replies in this transport adapter.
@@ -550,6 +695,11 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
         configured: true,
         connectionState: "ready",
         lastSubscribeAt: Date.now(),
+      });
+      void fetchAndSaveWecomDocMcpConfig({
+        client,
+        accountId: account.accountId,
+        runtime,
       });
     });
 
@@ -586,14 +736,21 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
       setStatus?.({
         accountId: account.accountId,
         mode: "ws",
-        running: true,
+        running: !shuttingDown,
         connectionState: "disconnected",
         lastDisconnectAt: Date.now(),
         lastDisconnectReason: reason,
       });
+      if (shuttingDown) {
+        cleanup();
+      }
     });
 
     client.on("error", (error) => {
+      if (shuttingDown && isExpectedShutdownWsError(error)) {
+        logger.debug(`wecom ws shutdown noise suppressed: ${error.message}`);
+        return;
+      }
       logger.error(`wecom ws sdk error: ${error.message}`);
       setStatus?.({
         accountId: account.accountId,
@@ -604,11 +761,11 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
     });
 
     conn.stop = () => {
-      finish();
+      beginShutdown();
     };
 
     if (abortSignal?.aborted) {
-      finish();
+      beginShutdown();
       return;
     }
 
@@ -617,7 +774,7 @@ export async function startWecomWsGateway(opts: StartWecomWsGatewayOptions): Pro
     try {
       client.connect();
     } catch (err) {
-      finish(err);
+      cleanup(err);
     }
   });
 

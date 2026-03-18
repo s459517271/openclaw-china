@@ -5,6 +5,7 @@ import { DEFAULT_WECOM_WS_URL } from "./config.js";
 import type { WecomReplyMsgItem } from "./ws-media.js";
 
 type JsonRecord = Record<string, unknown>;
+export type WecomWsNativeMediaType = "image" | "file" | "voice" | "video";
 
 export type WecomWsHeaders = {
   req_id?: string;
@@ -108,6 +109,25 @@ export function buildWecomWsRespondMessageCommand(params: {
       req_id: params.reqId,
     },
     body,
+  };
+}
+
+export function buildWecomWsRespondMediaCommand(params: {
+  reqId: string;
+  mediaType: WecomWsNativeMediaType;
+  mediaId: string;
+}): WecomWsFrame {
+  return {
+    cmd: "aibot_respond_msg",
+    headers: {
+      req_id: params.reqId,
+    },
+    body: {
+      msgtype: params.mediaType,
+      [params.mediaType]: {
+        media_id: params.mediaId,
+      },
+    },
   };
 }
 

@@ -130,8 +130,8 @@ importers:
         specifier: 2026.3.9-1
         version: link:../../packages/shared
       '@wecom/aibot-node-sdk':
-        specifier: ^1.0.1
-        version: 1.0.1
+        specifier: ^1.0.2
+        version: 1.0.2
       moltbot:
         specifier: '>=0.1.0'
         version: 0.1.0
@@ -892,6 +892,9 @@ packages:
 
   '@wecom/aibot-node-sdk@1.0.1':
     resolution: {integrity: sha512-c/sa1IvRKIP+4rZfRV2v70FaXB92+BJIh+vedZkPa8wZ1dwIUyvGg7ydkfYRIwFDzjO9IJZUX5V14EUQYVopAg==}
+
+  '@wecom/aibot-node-sdk@1.0.2':
+    resolution: {integrity: sha512-azClUIMWWF5vs8K1YWBiNykTFUawej0Z1ooN0ZMGX/PlLB/BK0dQfwbLc1a5Wj3bLRLaFb8HuCTuBrxLnJKJ7g==}
 
   acorn@8.15.0:
     resolution: {integrity: sha512-NZyJarBfL7nWwIq+FDL6Zp/yHEhePMNnnJ0y3qfieCrmNvYct8uvtiV41UvlSe6apAfk0fY1FbWx+NwfmpvtTg==}
@@ -1923,6 +1926,16 @@ snapshots:
       tinyrainbow: 1.2.0
 
   '@wecom/aibot-node-sdk@1.0.1':
+    dependencies:
+      axios: 1.13.4(debug@4.4.3)
+      eventemitter3: 5.0.4
+      ws: 8.19.0
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - utf-8-validate
+
+  '@wecom/aibot-node-sdk@1.0.2':
     dependencies:
       axios: 1.13.4(debug@4.4.3)
       eventemitter3: 5.0.4

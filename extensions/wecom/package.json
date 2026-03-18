@@ -6,6 +6,7 @@
   "license": "MIT",
   "files": [
     "dist",
+    "skills",
     "moltbot.plugin.json",
     "clawdbot.plugin.json",
     "openclaw.plugin.json"
@@ -98,8 +99,8 @@
     "release:major": "npm run build && npm version major && npm publish"
   },
   "dependencies": {
-    "@wecom/aibot-node-sdk": "^1.0.1",
     "@openclaw-china/shared": "2026.3.9-1",
+    "@wecom/aibot-node-sdk": "^1.0.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {

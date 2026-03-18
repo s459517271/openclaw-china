@@ -1,5 +1,11 @@
 import type { WecomWsFrame } from "./ws-protocol.js";
-import { buildWecomWsRespondMessageCommand, buildWecomWsUpdateTemplateCardCommand, createWecomWsStreamId } from "./ws-protocol.js";
+import {
+  buildWecomWsRespondMediaCommand,
+  buildWecomWsRespondMessageCommand,
+  buildWecomWsUpdateTemplateCardCommand,
+  createWecomWsStreamId,
+  type WecomWsNativeMediaType,
+} from "./ws-protocol.js";
 import { WECOM_REPLY_MSG_ITEM_LIMIT, type WecomReplyMsgItem } from "./ws-media.js";
 
 type WsSendFrame = (frame: WecomWsFrame) => Promise<void>;
@@ -18,6 +24,8 @@ type WsMessageContext = {
   updatedAt: number;
   sessionKey?: string;
   runId?: string;
+  placeholderContent: string;
+  suppressVisibleFallback: boolean;
   started: boolean;
   finished: boolean;
   queue: Promise<void>;
@@ -38,6 +46,8 @@ type WsEventContext = {
 const MESSAGE_CONTEXT_TTL_MS = 6 * 60 * 1000;
 const EVENT_CONTEXT_TTL_MS = 10 * 1000;
 const STREAM_FINISH_GRACE_MS = 2_500;
+export const WECOM_WS_THINKING_MESSAGE = "<think></think>";
+export const WECOM_WS_FINISH_FALLBACK_MESSAGE = "✅ 处理完成。";
 
 const messageContexts = new Map<string, WsMessageContext>();
 const eventContexts = new Map<string, WsEventContext>();
@@ -259,6 +269,8 @@ export function registerWecomWsMessageContext(params: {
     pendingAutoImagePaths: [],
     createdAt: now(),
     updatedAt: now(),
+    placeholderContent: "",
+    suppressVisibleFallback: false,
     started: false,
     finished: false,
     queue: Promise.resolve(),
@@ -267,6 +279,34 @@ export function registerWecomWsMessageContext(params: {
   messageContexts.set(key, context);
   addTargetIndex(messageByTarget, targetKey(context.accountId, context.to), key);
   return context.streamId;
+}
+
+export async function sendWecomWsMessagePlaceholder(params: {
+  accountId: string;
+  reqId: string;
+  content: string;
+}): Promise<boolean> {
+  pruneMessageContexts();
+  const key = messageKey(params.accountId.trim(), params.reqId.trim());
+  const context = messageContexts.get(key);
+  const content = params.content.trim();
+  if (!context || context.finished || context.started || !content) return false;
+
+  await enqueue(context, async () => {
+    if (context.finished || context.started) return;
+    await context.send(
+      buildWecomWsRespondMessageCommand({
+        reqId: context.reqId,
+        streamId: context.streamId,
+        content,
+        finish: false,
+      })
+    );
+    context.placeholderContent = content;
+    context.started = true;
+    context.updatedAt = now();
+  });
+  return true;
 }
 
 export function registerWecomWsEventContext(params: {
@@ -312,6 +352,21 @@ export function bindWecomWsRouteContext(params: {
     context.runId = runId;
     messageByRunId.set(routeKey(context.accountId, runId), key);
   }
+  context.updatedAt = now();
+}
+
+export function markWecomWsMessageContextSkipped(params: {
+  accountId: string;
+  reqId: string;
+  reason?: string;
+}): void {
+  pruneMessageContexts();
+  const key = messageKey(params.accountId.trim(), params.reqId.trim());
+  const context = messageContexts.get(key);
+  if (!context || context.finished) return;
+  const reason = String(params.reason ?? "").trim();
+  if (!reason) return;
+  context.suppressVisibleFallback = true;
   context.updatedAt = now();
 }
 
@@ -402,6 +457,7 @@ export async function appendWecomWsActiveStreamReply(params: {
       context.msgItems.push(...acceptedMsgItems);
     }
     if (chunk.trim()) {
+      context.placeholderContent = "";
       context.content = appendStreamSnapshotContent(context.content, chunk);
       await context.send(
         buildWecomWsRespondMessageCommand({
@@ -419,6 +475,32 @@ export async function appendWecomWsActiveStreamReply(params: {
     accepted: true,
     appendedMsgItems: acceptedMsgItems.length,
   };
+}
+
+export async function sendWecomWsActiveMedia(params: {
+  accountId: string;
+  to: string;
+  mediaType: WecomWsNativeMediaType;
+  mediaId: string;
+  sessionKey?: string;
+  runId?: string;
+}): Promise<boolean> {
+  const context = findMessageContext(params);
+  const mediaId = params.mediaId.trim();
+  if (!context || !mediaId) return false;
+  const key = messageKey(context.accountId, context.reqId);
+  clearFinishTimer(key);
+  await enqueue(context, async () => {
+    await context.send(
+      buildWecomWsRespondMediaCommand({
+        reqId: context.reqId,
+        mediaType: params.mediaType,
+        mediaId,
+      })
+    );
+    context.updatedAt = now();
+  });
+  return true;
 }
 
 export function scheduleWecomWsMessageContextFinish(params: {
@@ -451,13 +533,20 @@ export async function finishWecomWsMessageContext(params: {
         ? `${context.content}\n\n${errorMessage}`
         : errorMessage
       : context.content;
-    const sendFinish = context.started || Boolean(finalContent) || context.msgItems.length > 0;
+    const fallbackContent =
+      !finalContent &&
+      !context.suppressVisibleFallback &&
+      context.placeholderContent === WECOM_WS_THINKING_MESSAGE
+        ? WECOM_WS_FINISH_FALLBACK_MESSAGE
+        : undefined;
+    const finishContent = finalContent || fallbackContent;
+    const sendFinish = context.started || Boolean(finishContent) || context.msgItems.length > 0;
     if (sendFinish) {
       await context.send(
         buildWecomWsRespondMessageCommand({
           reqId: context.reqId,
           streamId: context.streamId,
-          content: finalContent || undefined,
+          content: finishContent,
           finish: true,
           msgItems: context.msgItems,
         })
