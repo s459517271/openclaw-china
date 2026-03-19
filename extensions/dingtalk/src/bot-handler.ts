@@ -398,6 +398,7 @@ function resolveGatewayRequestParams(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "x-openclaw-message-channel": "dingtalk",
   };
   if (typeof authToken === "string" && authToken.trim()) {
     headers["Authorization"] = `Bearer ${authToken}`;
@@ -431,12 +432,14 @@ async function* streamFromGateway(params: {
 
   const response = await fetch(gatewayUrl, {
     method: "POST",
-    headers,
+    headers: {
+      ...headers,
+      "x-openclaw-session-key": sessionKey,
+    },
     body: JSON.stringify({
       model: "default",
       messages: [{ role: "user", content: userContent }],
       stream: true,
-      user: sessionKey,
     }),
     signal: abortSignal,
   });
