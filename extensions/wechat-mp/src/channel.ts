@@ -5,6 +5,10 @@ import {
   resolveDefaultWechatMpAccountId,
   resolveWechatMpAccount,
 } from "./config.js";
+import { wechatMpOnboardingAdapter } from "./onboarding.js";
+import { wechatMpOutbound } from "./outbound.js";
+import { probeWechatMpAccount } from "./probe.js";
+import { getAccountState, updateAccountState } from "./state.js";
 import { registerWechatMpWebhookTarget } from "./webhook.js";
 import { setWechatMpRuntime } from "./runtime.js";
 import type { PluginConfig, ResolvedWechatMpAccount, WechatMpConfig } from "./types.js";
@@ -145,13 +149,7 @@ export const wechatMpPlugin = {
 
   reload: { configPrefixes: ["channels.wechat-mp"] },
 
-  onboarding: {
-    // Placeholder - will be implemented in later tasks
-    getWelcomeMessage: (params: { accountId?: string }) => {
-      const account = resolveWechatMpAccount({ cfg: {} as PluginConfig, accountId: params.accountId });
-      return account.config.welcomeText ?? "欢迎使用微信公众号智能客服";
-    },
-  },
+  onboarding: wechatMpOnboardingAdapter,
 
   config: {
     listAccountIds: (cfg: PluginConfig): string[] => listWechatMpAccountIds(cfg),
@@ -315,47 +313,7 @@ export const wechatMpPlugin = {
     getTargetFormats: () => ["wechat-mp:user:<openid>", "user:<openid>", "<openid>"],
   },
 
-  outbound: {
-    deliveryMode: "direct",
-    sendText: async (params: {
-      cfg: PluginConfig;
-      accountId?: string;
-      to: string;
-      text: string;
-    }) => {
-      const parsed = parseDirectTarget(params.to);
-      if (!parsed) {
-        return {
-          channel: "wechat-mp",
-          ok: false,
-          messageId: "",
-          error: new Error(`Unsupported target for WeChat MP: ${params.to}`),
-        };
-      }
-
-      const account = resolveWechatMpAccount({
-        cfg: params.cfg,
-        accountId: parsed.accountId ?? params.accountId,
-      });
-
-      if (!account.canSendActive) {
-        return {
-          channel: "wechat-mp",
-          ok: false,
-          messageId: "",
-          error: new Error("Account not configured for active sending (missing appId/appSecret)"),
-        };
-      }
-
-      // Placeholder implementation - actual send logic will be implemented in IMPL-006
-      return {
-        channel: "wechat-mp",
-        ok: false,
-        messageId: "",
-        error: new Error("sendText not yet implemented - placeholder skeleton"),
-      };
-    },
-  },
+  outbound: wechatMpOutbound,
 
   gateway: {
     startAccount: async (ctx: {
@@ -401,11 +359,22 @@ export const wechatMpPlugin = {
       if (previous) previous();
       unregisterHooks.set(account.accountId, unregister);
 
+      const lastStartAt = Date.now();
+      await updateAccountState(account.accountId, {
+        running: true,
+        configured: account.configured,
+        webhookPath: path,
+        lastStartAt,
+      });
+      const state = await getAccountState(account.accountId);
       ctx.setStatus?.({
         accountId: account.accountId,
         running: true,
         configured: account.configured,
+        canSendActive: account.canSendActive,
         webhookPath: path,
+        lastInboundAt: state.lastInboundAt,
+        lastStartAt,
       });
 
       if (ctx.abortSignal) {
@@ -427,21 +396,15 @@ export const wechatMpPlugin = {
         unregister();
         unregisterHooks.delete(ctx.accountId);
       }
-      ctx.setStatus?.({ accountId: ctx.accountId, running: false });
+      const lastStopAt = Date.now();
+      await updateAccountState(ctx.accountId, { running: false, lastStopAt });
+      ctx.setStatus?.({ accountId: ctx.accountId, running: false, lastStopAt });
     },
     getStatus: () => ({ connected: true }),
   },
 
   status: {
-    probeAccount: async (params: { cfg: PluginConfig; accountId?: string }) => {
-      const account = resolveWechatMpAccount({ cfg: params.cfg, accountId: params.accountId });
-      // Placeholder implementation - actual probe logic will be implemented in IMPL-006
-      return {
-        accountId: account.accountId,
-        configured: account.configured,
-        running: false,
-        error: "probeAccount not yet implemented - placeholder skeleton",
-      };
-    },
+    probeAccount: async (params: { cfg: PluginConfig; accountId?: string }) =>
+      probeWechatMpAccount({ cfg: params.cfg, accountId: params.accountId }),
   },
 };

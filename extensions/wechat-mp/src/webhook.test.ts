@@ -4,11 +4,12 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { Socket } from "node:net";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildWechatMpXml, computeMsgSignature, computeSignature, encryptWechatMpMessage } from "./crypto.js";
+import { buildWechatMpXml, computeMsgSignature, computeSignature, encryptWechatMpMessage, parseWechatMpXml } from "./crypto.js";
 import { flushWechatMpStateForTests, setWechatMpStateFilePathForTests } from "./state.js";
 import { handleWechatMpWebhookRequest, registerWechatMpWebhookTarget } from "./webhook.js";
+import { clearWechatMpRuntime, setWechatMpRuntime } from "./runtime.js";
 import type { PluginConfig, ResolvedWechatMpAccount, WebhookTarget } from "./types.js";
 
 const token = "callback-token";
@@ -104,7 +105,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await flushWechatMpStateForTests();
+  clearWechatMpRuntime();
   setWechatMpStateFilePathForTests();
+  vi.restoreAllMocks();
   if (tempDir) {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -240,6 +243,73 @@ describe("wechat-mp webhook", () => {
       expect(await handleWechatMpWebhookRequest(req2, res2)).toBe(true);
       expect(res1._getData()).toBe("success");
       expect(res2._getData()).toBe("success");
+    } finally {
+      unregister();
+    }
+  });
+
+  it("returns passive reply xml when runtime produces final text", async () => {
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async (params: {
+      dispatcherOptions: { deliver: (payload: { text?: string }) => Promise<void> };
+    }) => {
+      await params.dispatcherOptions.deliver({ text: "final passive reply" });
+    });
+    setWechatMpRuntime({
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            sessionKey: "session-1",
+            accountId: "default",
+            agentId: "agent-1",
+          }),
+        },
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher,
+        },
+        session: {
+          resolveStorePath: () => "/tmp/session-store",
+          readSessionUpdatedAt: () => null,
+          recordInboundSession: async () => undefined,
+        },
+      },
+    });
+
+    const unregister = registerWechatMpWebhookTarget(createTarget());
+
+    try {
+      const timestamp = "1710000000";
+      const nonce = "nonce-post-reply";
+      const plaintext = buildWechatMpXml({
+        ToUserName: appId,
+        FromUserName: "openid-2",
+        CreateTime: timestamp,
+        MsgType: "text",
+        Content: "hello",
+        MsgId: "msg-reply",
+      });
+      const encrypted = encryptWechatMpMessage({ encodingAESKey, appId, plaintext }).encrypt;
+      const signature = computeMsgSignature({ token, timestamp, nonce, encrypt: encrypted });
+      const rawBody = buildWechatMpXml({
+        ToUserName: appId,
+        Encrypt: encrypted,
+        MsgSignature: signature,
+        TimeStamp: timestamp,
+        Nonce: nonce,
+      });
+
+      const req = createMockRequest({
+        method: "POST",
+        url: `/wechat-mp?msg_signature=${encodeURIComponent(signature)}&timestamp=${encodeURIComponent(timestamp)}&nonce=${encodeURIComponent(nonce)}`,
+        rawBody,
+      });
+      const res = createMockResponse();
+
+      expect(await handleWechatMpWebhookRequest(req, res)).toBe(true);
+      expect(res._getStatusCode()).toBe(200);
+      expect(res._getData()).toContain("<xml>");
+      const parsed = parseWechatMpXml(res._getData());
+      expect(parsed.Encrypt).toBeTruthy();
+      expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     } finally {
       unregister();
     }

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { decryptWechatMpMessage, parseWechatMpXml, verifyMsgSignature, verifySignature } from "./crypto.js";
 import { dispatchWechatMpCandidate } from "./dispatch.js";
 import { normalizeWechatMpInbound } from "./inbound.js";
+import { buildPassiveTextReply, resolveReplyMode, sendWechatMpActiveText } from "./send.js";
 import { markProcessedMessage, updateAccountState } from "./state.js";
 import { tryGetWechatMpRuntime } from "./runtime.js";
 import { resolveWechatMpAccount } from "./config.js";
@@ -158,7 +159,10 @@ async function recordCandidateState(account: ResolvedWechatMpAccount, candidate:
   });
 }
 
-async function handoffInboundCandidate(target: WebhookTarget, candidate: WechatMpInboundCandidate): Promise<void> {
+async function handoffInboundCandidate(
+  target: WebhookTarget,
+  candidate: WechatMpInboundCandidate
+): Promise<{ passiveReplyBody?: string; dispatched: boolean; reason?: string }> {
   const runtime = tryGetWechatMpRuntime();
   const logger = createLogger(target);
 
@@ -166,7 +170,7 @@ async function handoffInboundCandidate(target: WebhookTarget, candidate: WechatM
 
   if (!runtime) {
     logger.warn(`runtime unavailable, skip candidate ${candidate.dedupeKey}`);
-    return;
+    return { dispatched: false, reason: "runtime unavailable" };
   }
 
   logger.info(
@@ -182,9 +186,49 @@ async function handoffInboundCandidate(target: WebhookTarget, candidate: WechatM
     error: target.runtime.error,
   });
 
-  if (!result.dispatched && result.reason) {
-    logger.info(`candidate skipped reason=${result.reason}`);
+  if (!result.dispatched) {
+    if (result.reason) {
+      logger.info(`candidate skipped reason=${result.reason}`);
+    }
+    return { dispatched: false, reason: result.reason };
   }
+
+  const combinedReply = result.combinedReply?.trim();
+  if (!combinedReply) {
+    return { dispatched: true };
+  }
+
+  const replyMode = resolveReplyMode(target.account);
+  if (replyMode === "active") {
+    const activeResult = await sendWechatMpActiveText({
+      account: target.account,
+      toUserName: candidate.openId,
+      text: combinedReply,
+    });
+    if (!activeResult.ok) {
+      await updateAccountState(target.account.accountId, {
+        lastError: activeResult.error,
+      });
+      logger.error(`active send failed: ${activeResult.error ?? "unknown error"}`);
+    }
+    return { dispatched: true };
+  }
+
+  const passive = buildPassiveTextReply({
+    account: target.account,
+    toUserName: candidate.openId,
+    fromUserName: candidate.toUserName ?? target.account.config.appId ?? "wechat-mp",
+    content: combinedReply,
+  });
+  if (!passive.ok) {
+    await updateAccountState(target.account.accountId, {
+      lastError: passive.error,
+    });
+    logger.error(`passive reply build failed: ${passive.error ?? "unknown error"}`);
+    return { dispatched: true };
+  }
+
+  return { dispatched: true, passiveReplyBody: passive.body };
 }
 
 export function registerWechatMpWebhookTarget(target: WebhookTarget): () => void {
@@ -339,11 +383,10 @@ export async function handleWechatMpWebhookRequest(
     encrypted: parsedBody.encrypted,
   });
 
-  res.statusCode = 200;
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.end("success");
-
   if (!candidate) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("success");
     await updateAccountState(target.account.accountId, {
       lastInboundAt: Date.now(),
       lastError: messageType ? undefined : "missing msg type",
@@ -355,10 +398,23 @@ export async function handleWechatMpWebhookRequest(
 
   const firstSeen = await markProcessedMessage(candidate.dedupeKey);
   if (!firstSeen) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("success");
     return true;
   }
 
-  void handoffInboundCandidate(target, candidate);
+  const handoff = await handoffInboundCandidate(target, candidate);
+  if (handoff.passiveReplyBody) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.end(handoff.passiveReplyBody);
+    return true;
+  }
+
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.end("success");
   return true;
 }
 
