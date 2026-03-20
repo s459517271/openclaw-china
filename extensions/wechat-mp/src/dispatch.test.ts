@@ -204,4 +204,61 @@ describe("wechat-mp dispatch", () => {
     expect(onChunk).toHaveBeenNthCalledWith(2, "step 2");
     expect(result.combinedReply).toBe("");
   });
+
+  it("normalizes markdown text by default in reply path", async () => {
+    const account = createAccount();
+    const { runtime } = createRuntime(["**bold text** and `code`"]);
+
+    const result = await dispatchWechatMpCandidate({
+      cfg: {} as PluginConfig,
+      account,
+      candidate: createTextCandidate(),
+      runtime,
+    });
+
+    // Default renderMarkdown=true strips markdown formatting
+    expect(result.combinedReply).toBe("bold text and code");
+  });
+
+  it("skips markdown normalization when renderMarkdown is false", async () => {
+    const account = createAccount({
+      config: {
+        appId: "wx-test-appid",
+        appSecret: "secret",
+        token: "token",
+        encodingAESKey: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        webhookPath: "/wechat-mp",
+        messageMode: "safe",
+        replyMode: "passive",
+        dmPolicy: "open",
+        renderMarkdown: false,
+      },
+    });
+    const { runtime } = createRuntime(["**bold text** and `code`"]);
+
+    const result = await dispatchWechatMpCandidate({
+      cfg: {} as PluginConfig,
+      account,
+      candidate: createTextCandidate(),
+      runtime,
+    });
+
+    // renderMarkdown=false preserves original markdown
+    expect(result.combinedReply).toBe("**bold text** and `code`");
+  });
+
+  it("applies markdown normalization to multiple chunks", async () => {
+    const account = createAccount();
+    const { runtime } = createRuntime(["# Heading", "**bold** text"]);
+
+    const result = await dispatchWechatMpCandidate({
+      cfg: {} as PluginConfig,
+      account,
+      candidate: createTextCandidate(),
+      runtime,
+    });
+
+    // Headings become bracketed, bold is stripped
+    expect(result.combinedReply).toBe("[Heading]\n\nbold text");
+  });
 });

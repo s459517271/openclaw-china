@@ -66,6 +66,8 @@ export type WechatMpAccountConfig = {
   messageMode?: WechatMpMessageMode;
   replyMode?: WechatMpReplyMode;
   activeDeliveryMode?: WechatMpActiveDeliveryMode;
+  /** Whether to render markdown-friendly text; default true. Set false to disable. */
+  renderMarkdown?: boolean;
   welcomeText?: string;
   dmPolicy?: WechatMpDmPolicy;
   allowFrom?: string[];

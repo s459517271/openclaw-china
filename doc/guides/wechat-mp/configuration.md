@@ -145,8 +145,7 @@ openclaw config set gateway.bind lan
   "token": "your-callback-token",
   "encodingAESKey": "your-43-char-encoding-aes-key",
   "messageMode": "safe",
-  "replyMode": "active",
-  "activeDeliveryMode": "split"
+  "replyMode": "active"
 }
 ```
 
@@ -158,6 +157,7 @@ openclaw config set gateway.bind lan
 - `encodingAESKey`：你自己设置，长度为 43 字符；仅 `safe / compat` 需要
 - `webhookPath`：你自己决定，例如 `/wechat-mp`
 - `activeDeliveryMode`：仅 `replyMode=active` 时生效，`split` 表示逐条发送日志/chunk，`merged` 表示最终合并成一条主动消息
+- `renderMarkdown`：是否将 Markdown 转换为公众号友好的纯文本格式；默认 `true`，设为 `false` 可禁用转换
 
 ## 五、配置步骤
 
@@ -269,6 +269,7 @@ openclaw china setup
 - `encodingAESKey`（`safe / compat` 必填, `plain`(明文模式)不需要）
 - `replyMode` (订阅号填 `passive`, 服务号选 `active`)
 - `activeDeliveryMode`（仅 `active` 时有效，推荐先用 `split`）
+- `renderMarkdown`（是否启用 Markdown 渲染，默认启用）
 - `welcomeText`
 
 > 当前 setup 以 **default account** 为主。
@@ -304,6 +305,7 @@ openclaw config set channels.wechat-mp.encodingAESKey your-43-char-encoding-aes-
 openclaw config set channels.wechat-mp.messageMode safe
 openclaw config set channels.wechat-mp.replyMode active
 openclaw config set channels.wechat-mp.activeDeliveryMode split
+openclaw config set channels.wechat-mp.renderMarkdown true
 openclaw config set channels.wechat-mp.welcomeText "你好，欢迎关注。"
 ```
 
@@ -324,6 +326,7 @@ openclaw config set channels.wechat-mp.welcomeText "你好，欢迎关注。"
       "messageMode": "safe",
       "replyMode": "active",
       "activeDeliveryMode": "split",
+      "renderMarkdown": true,
       "welcomeText": "你好，欢迎关注。",
       "dmPolicy": "open",
       "allowFrom": []
@@ -347,6 +350,7 @@ openclaw config set channels.wechat-mp.welcomeText "你好，欢迎关注。"
 | `messageMode`        | 建议     | —             | `plain` / `safe` / `compat`；setup 向导默认 `safe`       |
 | `replyMode`          | 建议     | `passive`     | `passive` / `active`                                     |
 | `activeDeliveryMode` | 否       | `split`       | 仅 `active` 生效：`split` 逐条发送，`merged` 合并发送 |
+| `renderMarkdown`     | 否       | `true`        | 是否将 Markdown 转换为公众号友好的纯文本；`false` 禁用 |
 | `welcomeText`        | 否       | —             | 欢迎语 / 默认提示文案                                       |
 | `dmPolicy`           | 否       | —             | `open / pairing / allowlist / disabled`                   |
 | `allowFrom`          | 否       | —             | allowlist 模式下允许的发送者列表                            |

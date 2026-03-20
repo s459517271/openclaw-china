@@ -13,6 +13,8 @@
 - 统一 routing / session / buffered reply dispatch 接入
 - 5 秒内 passive reply 主路径
 - active outbound skeleton
+- 超长消息自动分割（2048 字节限制，智能边界分割）
+- Markdown 渲染与格式转换
 - setup / aggregate / install hint 接线
 
 ## P1 / P2 暂未完成
@@ -37,6 +39,7 @@
       "messageMode": "safe",
       "replyMode": "active",
       "activeDeliveryMode": "split",
+      "renderMarkdown": true,
       "welcomeText": "你好，欢迎关注。"
     }
   }
@@ -52,7 +55,13 @@
    - `split`：每个日志 / chunk 单独发一条消息
    - `merged`：等待 reply pipeline 结束后合并成一条消息发送
 5. `replyMode=passive` 时始终单次 HTTP 回包，`activeDeliveryMode` 不生效。
-6. 推荐先用：
+6. `renderMarkdown` 控制 Markdown 格式渲染：
+   - `true`（默认）：自动将 Markdown 转换为公众号友好的纯文本格式
+   - `false`：保留原始 Markdown 格式，不做转换
+7. **消息长度限制**：公众号客服消息 API 有 2048 字节限制，超长消息会自动分割：
+   - 优先在自然边界处分割：段落 `\n\n` → 分割线 `---` → 换行 `\n` → 句末标点 → 空格
+   - 分割后的消息逐条发送，确保不截断中文字符
+8. 推荐先用：
 
 ```bash
 pnpm -F @openclaw-china/wechat-mp build

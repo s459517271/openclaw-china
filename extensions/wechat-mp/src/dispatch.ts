@@ -1,5 +1,6 @@
 import { resolveAllowFrom } from "./config.js";
 import { updateAccountState } from "./state.js";
+import { normalizeWechatMpText, resolveRenderMarkdown } from "./text.js";
 import type {
   PluginConfig,
   PluginRuntime,
@@ -189,6 +190,8 @@ export async function dispatchWechatMpCandidate(params: {
           )
       : (text: string) => text;
 
+  const renderMarkdown = resolveRenderMarkdown(params.account.config);
+
   const responseChunks: string[] = [];
   await dispatchReply({
     ctx: ctxPayload,
@@ -199,11 +202,13 @@ export async function dispatchWechatMpCandidate(params: {
         if (!text) return;
         const convertedText = convertTables(text);
         if (!convertedText) return;
+        const normalizedText = normalizeWechatMpText(convertedText, renderMarkdown);
+        if (!normalizedText) return;
         if (params.onChunk) {
-          await params.onChunk(convertedText);
+          await params.onChunk(normalizedText);
           return;
         }
-        responseChunks.push(convertedText);
+        responseChunks.push(normalizedText);
       },
       onError: (error, info) => {
         logger.error(`${info.kind} reply failed: ${String(error)}`);

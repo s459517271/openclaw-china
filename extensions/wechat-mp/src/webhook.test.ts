@@ -669,4 +669,180 @@ describe("wechat-mp webhook", () => {
       unregister();
     }
   });
+
+  it("normalizes markdown in passive reply by default", async () => {
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async (params: {
+      dispatcherOptions: { deliver: (payload: { text?: string }) => Promise<void> };
+    }) => {
+      await params.dispatcherOptions.deliver({ text: "**bold** and `code`" });
+    });
+    setWechatMpRuntime({
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            sessionKey: "session-1",
+            accountId: "default",
+            agentId: "agent-1",
+          }),
+        },
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher,
+        },
+        session: {
+          resolveStorePath: () => "/tmp/session-store",
+          readSessionUpdatedAt: () => null,
+          recordInboundSession: async () => undefined,
+        },
+      },
+    });
+
+    const unregister = registerWechatMpWebhookTarget(createTarget());
+
+    try {
+      const req = createEncryptedTextRequest({ msgId: "msg-passive-md" });
+      const res = createMockResponse();
+
+      expect(await handleWechatMpWebhookRequest(req, res)).toBe(true);
+      expect(res._getStatusCode()).toBe(200);
+      expect(res._getData()).toContain("<xml>");
+      const parsed = parseWechatMpXml(res._getData());
+      expect(parsed.Encrypt).toBeTruthy();
+      // The reply should have markdown stripped
+      expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("normalizes markdown in active merged mode by default", async () => {
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async (params: {
+      dispatcherOptions: { deliver: (payload: { text?: string }) => Promise<void> };
+    }) => {
+      await params.dispatcherOptions.deliver({ text: "# Title" });
+      await params.dispatcherOptions.deliver({ text: "**bold** text" });
+    });
+    setWechatMpRuntime({
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            sessionKey: "session-1",
+            accountId: "default",
+            agentId: "agent-1",
+          }),
+        },
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher,
+        },
+        session: {
+          resolveStorePath: () => "/tmp/session-store",
+          readSessionUpdatedAt: () => null,
+          recordInboundSession: async () => undefined,
+        },
+      },
+    });
+
+    const unregister = registerWechatMpWebhookTarget(
+      createTarget({
+        account: {
+          config: {
+            appId,
+            appSecret: "secret",
+            token,
+            encodingAESKey,
+            webhookPath: "/wechat-mp-active-merged-md",
+            messageMode: "safe",
+            replyMode: "active",
+            activeDeliveryMode: "merged",
+          },
+        },
+        path: "/wechat-mp-active-merged-md",
+      })
+    );
+
+    try {
+      const req = createEncryptedTextRequest({ path: "/wechat-mp-active-merged-md", msgId: "msg-merged-md" });
+      const res = createMockResponse();
+
+      expect(await handleWechatMpWebhookRequest(req, res)).toBe(true);
+      expect(res._getStatusCode()).toBe(200);
+      expect(res._getData()).toBe("success");
+      expect(sendWechatMpActiveTextMock).toHaveBeenCalledTimes(1);
+      // Markdown is normalized: headings become [bracketed], bold is stripped
+      expect(sendWechatMpActiveTextMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toUserName: "openid-1",
+          text: "[Title]\n\nbold text",
+        })
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  it("preserves markdown when renderMarkdown is false in active split mode", async () => {
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async (params: {
+      dispatcherOptions: { deliver: (payload: { text?: string }) => Promise<void> };
+    }) => {
+      await params.dispatcherOptions.deliver({ text: "**bold** text" });
+    });
+    setWechatMpRuntime({
+      channel: {
+        routing: {
+          resolveAgentRoute: () => ({
+            sessionKey: "session-1",
+            accountId: "default",
+            agentId: "agent-1",
+          }),
+        },
+        reply: {
+          dispatchReplyWithBufferedBlockDispatcher,
+        },
+        session: {
+          resolveStorePath: () => "/tmp/session-store",
+          readSessionUpdatedAt: () => null,
+          recordInboundSession: async () => undefined,
+        },
+      },
+    });
+
+    const unregister = registerWechatMpWebhookTarget(
+      createTarget({
+        account: {
+          config: {
+            appId,
+            appSecret: "secret",
+            token,
+            encodingAESKey,
+            webhookPath: "/wechat-mp-active-split-norm",
+            messageMode: "safe",
+            replyMode: "active",
+            activeDeliveryMode: "split",
+            renderMarkdown: false,
+          },
+        },
+        path: "/wechat-mp-active-split-norm",
+      })
+    );
+
+    try {
+      const req = createEncryptedTextRequest({ path: "/wechat-mp-active-split-norm", msgId: "msg-split-norm" });
+      const res = createMockResponse();
+
+      expect(await handleWechatMpWebhookRequest(req, res)).toBe(true);
+      expect(res._getStatusCode()).toBe(200);
+      expect(res._getData()).toBe("success");
+      await vi.waitFor(() => {
+        expect(sendWechatMpActiveTextMock).toHaveBeenCalledTimes(1);
+      });
+      // Markdown is preserved when renderMarkdown=false
+      expect(sendWechatMpActiveTextMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toUserName: "openid-1",
+          text: "**bold** text",
+        })
+      );
+    } finally {
+      unregister();
+    }
+  });
 });

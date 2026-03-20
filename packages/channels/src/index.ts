@@ -147,6 +147,7 @@ export type {
   WechatMpDmPolicy,
   WechatMpMessageMode,
   WechatMpReplyMode,
+  WechatMpActiveDeliveryMode,
 } from "@openclaw-china/wechat-mp";
 
 // TODO: 后续添加其他渠道

@@ -5,6 +5,11 @@ import {
   encryptWechatMpMessage,
 } from "./crypto.js";
 import { sendWechatMpMessage } from "./api.js";
+import {
+  WECHAT_TEXT_BYTE_LIMIT,
+  getUtf8ByteLength,
+  splitTextByByteLimit,
+} from "./text.js";
 import type {
   ResolvedWechatMpAccount,
   WechatMpActiveDeliveryMode,
@@ -96,11 +101,37 @@ export async function sendWechatMpActiveText(params: {
     };
   }
 
+  const byteLength = getUtf8ByteLength(params.text);
+
+  // Single message within limit, send directly
+  if (byteLength <= WECHAT_TEXT_BYTE_LIMIT) {
+    return sendSingleMessage(params.account, params.toUserName, params.text);
+  }
+
+  // Exceeds limit, split and send chunks
+  const chunks = splitTextByByteLimit(params.text, WECHAT_TEXT_BYTE_LIMIT);
+  let lastResult: ActiveSendResult = { ok: true };
+
+  for (const chunk of chunks) {
+    lastResult = await sendSingleMessage(params.account, params.toUserName, chunk);
+    if (!lastResult.ok) {
+      return lastResult; // Stop on failure
+    }
+  }
+
+  return lastResult;
+}
+
+async function sendSingleMessage(
+  account: ResolvedWechatMpAccount,
+  toUserName: string,
+  text: string
+): Promise<ActiveSendResult> {
   try {
-    const result = await sendWechatMpMessage(params.account, {
-      touser: params.toUserName,
+    const result = await sendWechatMpMessage(account, {
+      touser: toUserName,
       msgtype: "text",
-      text: { content: params.text },
+      text: { content: text },
     });
     return {
       ok: result.errcode === 0,

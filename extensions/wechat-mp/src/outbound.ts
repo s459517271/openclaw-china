@@ -1,5 +1,6 @@
 import { resolveWechatMpAccount } from "./config.js";
 import { sendWechatMpActiveText } from "./send.js";
+import { normalizeWechatMpText, resolveRenderMarkdown } from "./text.js";
 import type { PluginConfig } from "./types.js";
 
 function parseTarget(rawTarget: string): { accountId?: string; openId: string } | null {
@@ -45,10 +46,14 @@ export const wechatMpOutbound = {
       cfg: params.cfg,
       accountId: parsed.accountId ?? params.accountId,
     });
+
+    const renderMarkdown = resolveRenderMarkdown(account.config);
+    const normalizedText = normalizeWechatMpText(params.text, renderMarkdown);
+
     const result = await sendWechatMpActiveText({
       account,
       toUserName: parsed.openId,
-      text: params.text,
+      text: normalizedText,
     });
     return {
       channel: "wechat-mp",

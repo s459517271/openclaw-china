@@ -209,6 +209,7 @@ describe("china setup wechat-mp", () => {
       .mockResolvedValueOnce("wechat-mp")
       .mockResolvedValueOnce("safe")
       .mockResolvedValueOnce("passive");
+    confirmMock.mockResolvedValueOnce(true); // renderMarkdown enabled (default)
     textMock
       .mockResolvedValueOnce("/wechat-mp")
       .mockResolvedValueOnce("wx-test-appid")
@@ -232,6 +233,83 @@ describe("china setup wechat-mp", () => {
     expect(wechatMpConfig?.messageMode).toBe("safe");
     expect(wechatMpConfig?.replyMode).toBe("passive");
     expect(wechatMpConfig?.welcomeText).toBe("欢迎关注");
+    expect(wechatMpConfig?.renderMarkdown).toBe(true);
+  });
+
+  it("stores activeDeliveryMode when replyMode is active", async () => {
+    selectMock
+      .mockResolvedValueOnce("wechat-mp")
+      .mockResolvedValueOnce("safe")
+      .mockResolvedValueOnce("active")
+      .mockResolvedValueOnce("split");
+    textMock
+      .mockResolvedValueOnce("/wechat-mp-active")
+      .mockResolvedValueOnce("wx-active-appid")
+      .mockResolvedValueOnce("wx-active-secret")
+      .mockResolvedValueOnce("active-token")
+      .mockResolvedValueOnce("active-aes-key")
+      .mockResolvedValueOnce("welcome");
+
+    const { writeConfigFile } = await runSetup({}, ["wechat-mp"]);
+
+    expect(writeConfigFile).toHaveBeenCalledTimes(1);
+    const savedConfig = writeConfigFile.mock.calls[0]?.[0] as ConfigRoot;
+    const wechatMpConfig = savedConfig.channels?.["wechat-mp"];
+
+    expect(wechatMpConfig?.enabled).toBe(true);
+    expect(wechatMpConfig?.replyMode).toBe("active");
+    expect(wechatMpConfig?.activeDeliveryMode).toBe("split");
+  });
+
+  it("stores renderMarkdown when explicitly disabled", async () => {
+    selectMock
+      .mockResolvedValueOnce("wechat-mp")
+      .mockResolvedValueOnce("safe")
+      .mockResolvedValueOnce("active")
+      .mockResolvedValueOnce("merged");
+    confirmMock.mockResolvedValueOnce(false); // Disable renderMarkdown
+    textMock
+      .mockResolvedValueOnce("/wechat-mp-no-md")
+      .mockResolvedValueOnce("wx-no-md-appid")
+      .mockResolvedValueOnce("wx-no-md-secret")
+      .mockResolvedValueOnce("no-md-token")
+      .mockResolvedValueOnce("no-md-aes-key")
+      .mockResolvedValueOnce("welcome");
+
+    const { writeConfigFile } = await runSetup({}, ["wechat-mp"]);
+
+    expect(writeConfigFile).toHaveBeenCalledTimes(1);
+    const savedConfig = writeConfigFile.mock.calls[0]?.[0] as ConfigRoot;
+    const wechatMpConfig = savedConfig.channels?.["wechat-mp"];
+
+    expect(wechatMpConfig?.enabled).toBe(true);
+    expect(wechatMpConfig?.activeDeliveryMode).toBe("merged");
+    expect(wechatMpConfig?.renderMarkdown).toBe(false);
+  });
+
+  it("defaults renderMarkdown to true when not explicitly disabled", async () => {
+    selectMock
+      .mockResolvedValueOnce("wechat-mp")
+      .mockResolvedValueOnce("safe")
+      .mockResolvedValueOnce("passive");
+    confirmMock.mockResolvedValueOnce(true); // Keep renderMarkdown enabled (default)
+    textMock
+      .mockResolvedValueOnce("/wechat-mp-default-md")
+      .mockResolvedValueOnce("wx-default-appid")
+      .mockResolvedValueOnce("wx-default-secret")
+      .mockResolvedValueOnce("default-token")
+      .mockResolvedValueOnce("default-aes-key")
+      .mockResolvedValueOnce("welcome");
+
+    const { writeConfigFile } = await runSetup({}, ["wechat-mp"]);
+
+    expect(writeConfigFile).toHaveBeenCalledTimes(1);
+    const savedConfig = writeConfigFile.mock.calls[0]?.[0] as ConfigRoot;
+    const wechatMpConfig = savedConfig.channels?.["wechat-mp"];
+
+    expect(wechatMpConfig?.enabled).toBe(true);
+    // setup writes the value explicitly, even when it's the default true
+    expect(wechatMpConfig?.renderMarkdown).toBe(true);
   });
 });
 

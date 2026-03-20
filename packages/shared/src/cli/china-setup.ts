@@ -757,6 +757,24 @@ async function configureWechatMp(prompter: SetupPrompter, cfg: ConfigRoot): Prom
     ],
     (toTrimmedString(existing.replyMode) as "passive" | "active" | undefined) ?? "passive"
   );
+
+  let activeDeliveryMode: "merged" | "split" | undefined;
+  if (replyMode === "active") {
+    activeDeliveryMode = await prompter.askSelect<"merged" | "split">(
+      "主动发送模式（activeDeliveryMode）",
+      [
+        { value: "split", label: "split（逐块发送，推荐）" },
+        { value: "merged", label: "merged（合并后单次发送）" },
+      ],
+      (toTrimmedString(existing.activeDeliveryMode) as "merged" | "split" | undefined) ?? "split"
+    );
+  }
+
+  const renderMarkdown = await prompter.askConfirm(
+    "启用 Markdown 渲染（推荐开启）",
+    toBoolean(existing.renderMarkdown, true)
+  );
+
   const welcomeText = await prompter.askText({
     label: "欢迎语（可选）",
     defaultValue: toTrimmedString(existing.welcomeText),
@@ -771,6 +789,8 @@ async function configureWechatMp(prompter: SetupPrompter, cfg: ConfigRoot): Prom
     encodingAESKey: messageMode === "plain" ? undefined : encodingAESKey,
     messageMode,
     replyMode,
+    activeDeliveryMode,
+    renderMarkdown,
     welcomeText: welcomeText || undefined,
   });
 }
